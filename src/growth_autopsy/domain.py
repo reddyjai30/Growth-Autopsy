@@ -27,6 +27,20 @@ class RecordingStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ArtifactStatus(StrEnum):
+    SCHEDULED = "SCHEDULED"
+    PROCESSING = "PROCESSING"
+    READY = "READY"
+    APPROVED = "APPROVED"
+    REVISION_REQUESTED = "REVISION_REQUESTED"
+    FAILED = "FAILED"
+
+
+class ArtifactDecision(StrEnum):
+    APPROVE = "approve"
+    REVISE = "revise"
+
+
 @dataclass(slots=True)
 class Appointment:
     calendar_event_id: str
@@ -65,3 +79,17 @@ class Recording:
     analysis_run_id: str | None = None
     last_error: str | None = None
 
+
+@dataclass(slots=True)
+class Artifact:
+    id: int | None
+    calendar_event_id: str
+    kind: str
+    title: str
+    status: ArtifactStatus
+    source_id: str = ""
+    file_path: str = ""
+    content: str = ""
+    notes: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

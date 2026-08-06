@@ -4,8 +4,8 @@ import argparse
 import asyncio
 import json
 
-from .calendar_ingestion import CalendarIngestionService, GoogleCalendarGateway
 from .config import get_settings
+from .controller import collect_agent_outputs, run_due_precall_research, sync_calendar_once
 from .hermes import HermesClient
 from .store import WorkflowStore
 
@@ -24,31 +24,10 @@ def _build_runtime():
 
 async def _calendar_sync() -> dict:
     settings, store, hermes = _build_runtime()
-    gateway = GoogleCalendarGateway(
-        settings.google_token_file,
-        settings.google_calendar_id,
-        lookback_hours=settings.calendar_lookback_hours,
-        lookahead_days=settings.calendar_lookahead_days,
-    )
-    service = CalendarIngestionService(
-        gateway,
-        store,
-        hermes,
-        calendar_id=settings.google_calendar_id,
-        title_prefix=settings.calendar_title_prefix,
-        diksha_email=settings.diksha_email,
-        precall_start_minutes=settings.precall_start_minutes,
-        precall_delivery_minutes=settings.precall_delivery_minutes,
-    )
-    result = await service.sync()
-    return {
-        "scanned": result.scanned,
-        "ignored": result.ignored,
-        "scheduled": result.scheduled,
-        "updated": result.updated,
-        "cancelled": result.cancelled,
-        "needs_input": result.needs_input,
-    }
+    result = await sync_calendar_once(settings, store)
+    result["research"] = await run_due_precall_research(settings, store, hermes)
+    result["agent_outputs"] = await collect_agent_outputs(settings, store, hermes)
+    return result
 
 
 def main() -> None:
@@ -97,4 +76,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

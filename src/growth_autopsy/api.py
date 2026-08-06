@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from .calendar_ingestion import CalendarIngestionService, GoogleCalendarGateway
 from .config import Settings, get_settings
+from .controller import (
+    _sync_message,
+    automation_loop,
+    collect_agent_outputs,
+    dashboard_payload,
+    record_sync_error,
+    run_due_precall_research,
+    sync_calendar_once,
+)
+from .domain import ArtifactStatus, AppointmentStatus
 from .fathom import FathomIngestionService, FathomWebhookError
 from .hermes import HermesClient, HermesError
 from .store import WorkflowStore
@@ -38,16 +52,31 @@ def require_internal_key(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    get_store().initialize()
+    store = get_store()
+    store.initialize()
+    settings = get_settings()
+    stop = asyncio.Event()
+    task: asyncio.Task | None = None
+    if settings.enable_background_sync:
+        task = asyncio.create_task(
+            automation_loop(settings, store, get_hermes(settings), stop),
+            name="growth-autopsy-automation",
+        )
     yield
+    if task:
+        stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except TimeoutError:
+            task.cancel()
 
 
-app = FastAPI(title="Growth Autopsy POC", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Growth Autopsy POC", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 @app.post("/webhooks/fathom", status_code=status.HTTP_202_ACCEPTED)
@@ -92,46 +121,114 @@ async def calendar_sync(
     store: WorkflowStore = Depends(get_store),
     hermes: HermesClient = Depends(get_hermes),
 ) -> dict:
-    gateway = GoogleCalendarGateway(
-        settings.google_token_file,
-        settings.google_calendar_id,
-        lookback_hours=settings.calendar_lookback_hours,
-        lookahead_days=settings.calendar_lookahead_days,
-    )
-    service = CalendarIngestionService(
-        gateway,
-        store,
-        hermes,
-        calendar_id=settings.google_calendar_id,
-        title_prefix=settings.calendar_title_prefix,
-        diksha_email=settings.diksha_email,
-        precall_start_minutes=settings.precall_start_minutes,
-        precall_delivery_minutes=settings.precall_delivery_minutes,
-    )
-    result = await service.sync()
-    return {
-        "scanned": result.scanned,
-        "ignored": result.ignored,
-        "scheduled": result.scheduled,
-        "updated": result.updated,
-        "cancelled": result.cancelled,
-        "needs_input": result.needs_input,
-    }
+    try:
+        result = await sync_calendar_once(settings, store)
+        _sync_message(store, result)
+        research = await run_due_precall_research(settings, store, hermes)
+        outputs = await collect_agent_outputs(settings, store, hermes)
+    except Exception as exc:
+        record_sync_error(store, exc)
+        raise HTTPException(status_code=502, detail=str(exc)[:1000]) from exc
+    return {**result, "research": research, "agent_outputs": outputs}
+
+
+@app.get("/internal/dashboard", dependencies=[Depends(require_internal_key)])
+async def dashboard(
+    settings: Settings = Depends(get_settings),
+    store: WorkflowStore = Depends(get_store),
+) -> dict:
+    return dashboard_payload(settings, store)
 
 
 @app.get("/internal/appointments", dependencies=[Depends(require_internal_key)])
-async def appointments(store: WorkflowStore = Depends(get_store)) -> list[dict]:
-    return [
-        {
-            "calendar_event_id": item.calendar_event_id,
-            "title": item.title,
-            "company": item.company,
-            "website": item.website,
-            "start_at": item.start_at.isoformat(),
-            "status": item.status.value,
-            "research_job_id": item.research_job_id,
-            "last_error": item.last_error,
-        }
-        for item in store.list_appointments()
-    ]
+async def appointments(
+    settings: Settings = Depends(get_settings),
+    store: WorkflowStore = Depends(get_store),
+) -> list[dict]:
+    return dashboard_payload(settings, store)["appointments"]
 
+
+@app.post(
+    "/internal/appointments/{calendar_event_id}/precall/run",
+    dependencies=[Depends(require_internal_key)],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_precall_now(
+    calendar_event_id: str,
+    settings: Settings = Depends(get_settings),
+    store: WorkflowStore = Depends(get_store),
+    hermes: HermesClient = Depends(get_hermes),
+) -> dict:
+    appointment = store.get_appointment(calendar_event_id)
+    if appointment is None:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    if appointment.status == AppointmentStatus.CANCELLED:
+        raise HTTPException(status_code=409, detail="Cancelled appointments cannot run")
+    if not appointment.website:
+        raise HTTPException(status_code=409, detail="Add the company website to the calendar event")
+    artifact = store.get_artifact_by_kind(calendar_event_id, "precall_research")
+    if artifact and artifact.status == ArtifactStatus.PROCESSING:
+        raise HTTPException(status_code=409, detail="Pre-call research is already running")
+    result = await run_due_precall_research(
+        settings,
+        store,
+        hermes,
+        force_event_id=calendar_event_id,
+    )
+    if not result:
+        raise HTTPException(status_code=409, detail="Pre-call research could not be queued")
+    return result[0]
+
+
+class DecisionRequest(BaseModel):
+    decision: str
+    notes: str = Field(default="", max_length=4000)
+
+
+@app.post("/internal/artifacts/{artifact_id}/decision", dependencies=[Depends(require_internal_key)])
+async def artifact_decision(
+    artifact_id: int,
+    decision: DecisionRequest,
+    store: WorkflowStore = Depends(get_store),
+) -> dict[str, str | int]:
+    artifact = store.get_artifact(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.status not in {
+        ArtifactStatus.READY,
+        ArtifactStatus.APPROVED,
+        ArtifactStatus.REVISION_REQUESTED,
+    }:
+        raise HTTPException(status_code=409, detail="Artifact is not ready for a decision")
+    normalized = decision.decision.casefold()
+    if normalized == "approve":
+        new_status = ArtifactStatus.APPROVED
+    elif normalized in {"revise", "revision", "reject"}:
+        if not decision.notes.strip():
+            raise HTTPException(status_code=422, detail="Revision notes are required")
+        new_status = ArtifactStatus.REVISION_REQUESTED
+    else:
+        raise HTTPException(status_code=422, detail="Decision must be approve or revise")
+    store.update_artifact(artifact_id, status=new_status, notes=decision.notes.strip())
+    return {"artifact_id": artifact_id, "status": new_status.value}
+
+
+@app.get("/internal/artifacts/{artifact_id}/download", dependencies=[Depends(require_internal_key)])
+async def artifact_download(
+    artifact_id: int,
+    settings: Settings = Depends(get_settings),
+    store: WorkflowStore = Depends(get_store),
+) -> FileResponse:
+    artifact = store.get_artifact(artifact_id)
+    if artifact is None or not artifact.file_path:
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    target = Path(artifact.file_path).resolve()
+    allowed = settings.shared_workdir.resolve()
+    if not target.is_relative_to(allowed) or not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    return FileResponse(target, filename=target.name, media_type="text/markdown")
+
+
+STATIC_DIR = Path(__file__).with_name("dashboard")
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="dashboard")

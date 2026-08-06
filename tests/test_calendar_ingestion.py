@@ -67,6 +67,25 @@ def test_missing_website_requires_input() -> None:
     assert appointment.status == AppointmentStatus.NEEDS_INPUT
 
 
+def test_google_calendar_html_description_is_parsed() -> None:
+    event = calendar_event()
+    event["description"] = (
+        "<div>Automation: GROWTH_AUTOPSY</div>"
+        "<div>Company: Acme</div>"
+        '<div>Website: <a href="https://acme.example">https://acme.example</a></div>'
+        "<div>Founder: Alice Founder</div>"
+    )
+    appointment = parse_calendar_event(
+        event,
+        calendar_id="primary",
+        title_prefix="[GROWTH AUTOPSY]",
+    )
+
+    assert appointment is not None
+    assert appointment.website == "https://acme.example"
+    assert appointment.founder_name == "Alice Founder"
+
+
 class FakeCalendar:
     def __init__(self, events: list[dict]):
         self.events = events
@@ -90,6 +109,10 @@ class FakeHermes:
 
     async def delete_job(self, job_id):
         self.deleted.append(job_id)
+
+    @staticmethod
+    def can_update_job(job_id):
+        return True
 
 
 @pytest.mark.asyncio
@@ -117,6 +140,7 @@ async def test_sync_creates_updates_and_cancels_research_job(tmp_path) -> None:
     assert stored is not None
     assert stored.research_job_id == "job-1"
     assert stored.status == AppointmentStatus.RESEARCH_SCHEDULED
+    assert store.get_artifact_by_kind("event-123", "precall_research") is not None
 
     gateway.events[0]["etag"] = "etag-2"
     gateway.events[0]["start"]["dateTime"] = "2026-08-20T16:00:00+05:30"
@@ -129,4 +153,3 @@ async def test_sync_creates_updates_and_cancels_research_job(tmp_path) -> None:
     assert third.cancelled == 1
     assert hermes.deleted == ["job-1"]
     assert store.get_appointment("event-123").status == AppointmentStatus.CANCELLED  # type: ignore[union-attr]
-

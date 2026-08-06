@@ -7,7 +7,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
-from .domain import Appointment, AppointmentStatus, Recording, RecordingStatus
+from .domain import (
+    Artifact,
+    ArtifactStatus,
+    Appointment,
+    AppointmentStatus,
+    Recording,
+    RecordingStatus,
+)
 
 
 def _now() -> str:
@@ -115,6 +122,28 @@ class WorkflowStore:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    calendar_event_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source_id TEXT NOT NULL DEFAULT '',
+                    file_path TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(calendar_event_id)
+                        REFERENCES appointments(calendar_event_id),
+                    UNIQUE(calendar_event_id, kind)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_artifacts_event
+                    ON artifacts(calendar_event_id);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_status
+                    ON artifacts(status);
                 """
             )
 
@@ -363,29 +392,160 @@ class WorkflowStore:
                 (status.value, error, _now(), recording_id),
             )
 
+    def list_recordings(self, calendar_event_id: str | None = None) -> list[Recording]:
+        with self.connect() as conn:
+            if calendar_event_id:
+                rows = conn.execute(
+                    "SELECT * FROM recordings WHERE calendar_event_id=? "
+                    "ORDER BY scheduled_start_at DESC",
+                    (calendar_event_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM recordings ORDER BY scheduled_start_at DESC LIMIT 200"
+                ).fetchall()
+        return [self._recording_from_row(row) for row in rows]
+
     def get_recording(self, recording_id: int) -> Recording | None:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM recordings WHERE recording_id=?",
                 (recording_id,),
             ).fetchone()
+        return self._recording_from_row(row) if row else None
+
+    def upsert_artifact(self, artifact: Artifact) -> int:
+        now = _now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    calendar_event_id, kind, title, status, source_id,
+                    file_path, content, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(calendar_event_id, kind) DO UPDATE SET
+                    title=excluded.title,
+                    status=excluded.status,
+                    source_id=excluded.source_id,
+                    file_path=excluded.file_path,
+                    content=excluded.content,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    artifact.calendar_event_id,
+                    artifact.kind,
+                    artifact.title,
+                    artifact.status.value,
+                    artifact.source_id,
+                    artifact.file_path,
+                    artifact.content,
+                    artifact.notes,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM artifacts WHERE calendar_event_id=? AND kind=?",
+                (artifact.calendar_event_id, artifact.kind),
+            ).fetchone()
         if row is None:
-            return None
-        return Recording(
-            recording_id=int(row["recording_id"]),
-            webhook_id=row["webhook_id"],
-            calendar_event_id=row["calendar_event_id"],
-            meeting_title=row["meeting_title"],
-            scheduled_start_at=_datetime(row["scheduled_start_at"]),  # type: ignore[arg-type]
-            recording_start_at=_datetime(row["recording_start_at"]),
-            recording_end_at=_datetime(row["recording_end_at"]),
-            external_invitee_emails=json.loads(row["external_invitee_emails_json"]),
-            transcript_path=row["transcript_path"],
-            payload=json.loads(row["payload_json"]),
-            status=RecordingStatus(row["status"]),
-            analysis_run_id=row["analysis_run_id"],
-            last_error=row["last_error"],
-        )
+            raise RuntimeError("Artifact insert did not return an id")
+        return int(row["id"])
+
+    def get_artifact(self, artifact_id: int) -> Artifact | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
+        return self._artifact_from_row(row) if row else None
+
+    def get_artifact_by_kind(self, calendar_event_id: str, kind: str) -> Artifact | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM artifacts WHERE calendar_event_id=? AND kind=?",
+                (calendar_event_id, kind),
+            ).fetchone()
+        return self._artifact_from_row(row) if row else None
+
+    def list_artifacts(
+        self,
+        calendar_event_id: str | None = None,
+        *,
+        statuses: tuple[ArtifactStatus, ...] | None = None,
+    ) -> list[Artifact]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if calendar_event_id:
+            clauses.append("calendar_event_id=?")
+            params.append(calendar_event_id)
+        if statuses:
+            clauses.append("status IN (%s)" % ",".join("?" for _ in statuses))
+            params.extend(item.value for item in statuses)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM artifacts{where} ORDER BY created_at ASC", params
+            ).fetchall()
+        return [self._artifact_from_row(row) for row in rows]
+
+    def claim_artifact_for_processing(
+        self,
+        artifact_id: int,
+        *,
+        allowed_statuses: tuple[ArtifactStatus, ...],
+        source_id: str = "",
+        notes: str = "",
+    ) -> bool:
+        """Atomically claim a queued/failed artifact so duplicate loops cannot run it."""
+
+        now = _now()
+        placeholders = ",".join("?" for _ in allowed_statuses)
+        params: list[object] = [
+            ArtifactStatus.PROCESSING.value,
+            source_id,
+            notes,
+            now,
+            artifact_id,
+            *(item.value for item in allowed_statuses),
+        ]
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                f"""
+                UPDATE artifacts
+                SET status=?, source_id=?, notes=?, updated_at=?
+                WHERE id=? AND status IN ({placeholders})
+                """,
+                params,
+            )
+        return cursor.rowcount == 1
+
+    def update_artifact(
+        self,
+        artifact_id: int,
+        *,
+        status: ArtifactStatus | None = None,
+        source_id: str | None = None,
+        file_path: str | None = None,
+        content: str | None = None,
+        notes: str | None = None,
+    ) -> None:
+        values: dict[str, object] = {"updated_at": _now()}
+        if status is not None:
+            values["status"] = status.value
+        if source_id is not None:
+            values["source_id"] = source_id
+        if file_path is not None:
+            values["file_path"] = file_path
+        if content is not None:
+            values["content"] = content
+        if notes is not None:
+            values["notes"] = notes
+        assignments = ", ".join(f"{key}=?" for key in values)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE artifacts SET {assignments} WHERE id=?",
+                [*values.values(), artifact_id],
+            )
 
     def match_appointment(
         self,
@@ -436,6 +596,40 @@ class WorkflowStore:
                 (key,),
             ).fetchone()
         return str(row["value"]) if row else None
+
+    @staticmethod
+    def _recording_from_row(row: sqlite3.Row) -> Recording:
+        return Recording(
+            recording_id=int(row["recording_id"]),
+            webhook_id=row["webhook_id"],
+            calendar_event_id=row["calendar_event_id"],
+            meeting_title=row["meeting_title"],
+            scheduled_start_at=_datetime(row["scheduled_start_at"]),  # type: ignore[arg-type]
+            recording_start_at=_datetime(row["recording_start_at"]),
+            recording_end_at=_datetime(row["recording_end_at"]),
+            external_invitee_emails=json.loads(row["external_invitee_emails_json"]),
+            transcript_path=row["transcript_path"],
+            payload=json.loads(row["payload_json"]),
+            status=RecordingStatus(row["status"]),
+            analysis_run_id=row["analysis_run_id"],
+            last_error=row["last_error"],
+        )
+
+    @staticmethod
+    def _artifact_from_row(row: sqlite3.Row) -> Artifact:
+        return Artifact(
+            id=int(row["id"]),
+            calendar_event_id=row["calendar_event_id"],
+            kind=row["kind"],
+            title=row["title"],
+            status=ArtifactStatus(row["status"]),
+            source_id=row["source_id"],
+            file_path=row["file_path"],
+            content=row["content"],
+            notes=row["notes"],
+            created_at=_datetime(row["created_at"]),
+            updated_at=_datetime(row["updated_at"]),
+        )
 
     @staticmethod
     def _appointment_from_row(row: sqlite3.Row) -> Appointment:

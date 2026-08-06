@@ -1,14 +1,20 @@
 # Growth Autopsy POC
 
-This companion service implements the deterministic control plane for Diksha's
-calendar-to-content workflow. Hermes performs research and analysis; this
-service owns event parsing, durable state, scheduling, webhook security,
-deduplication, and meeting-to-appointment matching.
+This service is the deterministic control plane for Diksha's calendar-to-content
+workflow. It gathers public evidence with free local collectors and gives that
+fixed evidence corpus to Gemini through Hermes for synthesis. It owns event
+parsing, durable state, scheduling, webhook security, deduplication, and
+meeting-to-appointment matching.
 
 ## Implemented in the first vertical slice
 
 - Google Calendar event parsing with a structured event-description contract
-- creation, update, and deletion of one-shot Hermes research jobs
+- durable local pre-call scheduling at T-60, with a manual Run now control
+- bounded website crawl with robots.txt, sitemap and SSRF protection
+- free DuckDuckGo discovery search and on-page SEO/technology signals
+- Google PageSpeed with pinned local Lighthouse fallback
+- evidence JSON/Markdown and Gemini-synthesized report artifacts
+- responsive operator dashboard with progress, downloads and approval controls
 - SQLite workflow state and webhook-attempt history
 - Fathom webhook signature verification and replay protection
 - transcript persistence with speaker names and timestamps
@@ -21,6 +27,7 @@ deduplication, and meeting-to-appointment matching.
 ```bash
 cp .env.example .env
 uv sync --extra dev
+npm install
 uv run growth-autopsy init-db
 uv run growth-autopsy serve
 ```
@@ -54,10 +61,12 @@ Do not expose the Hermes API server directly to the public internet. Only the
 Fathom webhook service should be tunneled, and Fathom requests are accepted
 only after their timestamped signature validates.
 
-## Calendar polling
+Open `http://127.0.0.1:8787` for the operator dashboard.
 
-For the POC, run this command every two minutes using a script-only Hermes cron
-job or the operating system scheduler:
+## Calendar automation
+
+The web service polls Calendar automatically every 60 seconds. A manual sync is
+also available in the dashboard. For one-off diagnostics, run:
 
 ```bash
 uv run growth-autopsy calendar-sync
@@ -69,8 +78,8 @@ all discovery calls. Missing company or website data moves the appointment to
 
 ## Current boundary
 
-This slice schedules the pre-call agent and starts post-call Founder
-Intelligence analysis. Google Docs, approval/revision handling, public Notion
-publishing, LinkedIn queuing, and two-founder newsletter batching are the next
-workflow slices; none should publish without explicit business approval.
-
+The POC completes calendar ingestion, pre-call collection/synthesis, report
+review controls, Fathom transcript ingestion and Founder Intelligence handoff.
+Google Docs, public Notion publishing, LinkedIn queuing, deck export and
+two-founder newsletter batching remain later slices. Nothing publishes without
+explicit business approval.

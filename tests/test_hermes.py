@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 
 import httpx
 import pytest
@@ -50,3 +51,26 @@ async def test_create_research_job_uses_hermes_jobs_api() -> None:
     assert captured[0].headers["authorization"] == "Bearer secret"
     assert b"founder-precall-research" in captured[0].content
 
+
+@pytest.mark.asyncio
+async def test_start_precall_run_sends_evidence_only() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"run_id": "run-precall"})
+
+    client = HermesClient(
+        "http://hermes.local",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    )
+    evidence = {"website": {"final_url": "https://acme.example"}, "traffic": {"status": "unavailable"}}
+
+    run_id = await client.start_precall_run(appointment(), evidence)
+
+    assert run_id == "run-precall"
+    payload = json.loads(captured[0].content)
+    assert captured[0].url.path == "/v1/runs"
+    assert "Do not browse" in payload["instructions"]
+    assert "https://acme.example" in payload["input"]

@@ -29,10 +29,32 @@ class Settings(BaseSettings):
     calendar_lookback_hours: int = Field(default=24, ge=0, le=168)
     precall_start_minutes: int = Field(default=60, ge=30, le=240)
     precall_delivery_minutes: int = Field(default=30, ge=5, le=120)
+    precall_research_backend: str = "local_free"
+    precall_max_pages: int = Field(default=12, ge=1, le=30)
+    precall_max_concurrency: int = Field(default=4, ge=1, le=10)
+    precall_http_timeout_seconds: int = Field(default=20, ge=5, le=90)
+    precall_max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=65536, le=10485760)
+    precall_search_enabled: bool = True
+    precall_search_results_per_query: int = Field(default=5, ge=1, le=10)
+    precall_search_timeout_seconds: int = Field(default=20, ge=5, le=60)
+    precall_pagespeed_enabled: bool = True
+    pagespeed_api_key: str = ""
+    precall_pagespeed_timeout_seconds: int = Field(default=60, ge=10, le=120)
+    precall_local_lighthouse_enabled: bool = True
+    lighthouse_executable: Path = Path("node_modules/.bin/lighthouse")
+    precall_local_lighthouse_timeout_seconds: int = Field(default=90, ge=30, le=180)
+    precall_collection_stale_minutes: int = Field(default=20, ge=5, le=120)
+    precall_max_parallel_appointments: int = Field(default=2, ge=1, le=5)
 
     hermes_base_url: str = "http://127.0.0.1:8642"
     hermes_api_key: str = ""
     hermes_delivery_target: str = "local"
+    hermes_cron_output_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".hermes" / "cron" / "output"
+    )
+
+    enable_background_sync: bool = True
+    background_sync_interval_seconds: int = Field(default=60, ge=15, le=3600)
 
     fathom_webhook_secret: str = ""
     fathom_api_key: str = ""
@@ -47,7 +69,13 @@ class Settings(BaseSettings):
 
     def resolve_paths(self, base_dir: Path | None = None) -> "Settings":
         base = (base_dir or Path.cwd()).resolve()
-        for field_name in ("database_path", "shared_workdir", "google_token_file"):
+        for field_name in (
+            "database_path",
+            "shared_workdir",
+            "google_token_file",
+            "hermes_cron_output_dir",
+            "lighthouse_executable",
+        ):
             value = getattr(self, field_name)
             if not value.is_absolute():
                 setattr(self, field_name, (base / value).resolve())
@@ -57,4 +85,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings().resolve_paths()
-

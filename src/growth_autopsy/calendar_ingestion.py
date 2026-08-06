@@ -1,19 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from .domain import Appointment, AppointmentStatus
-from .hermes import HermesClient
+from bs4 import BeautifulSoup
+
+from .domain import Artifact, ArtifactStatus, Appointment, AppointmentStatus
 from .store import WorkflowStore
 
 
 class CalendarGateway(Protocol):
     def list_events(self) -> list[dict[str, Any]]: ...
+
+
+class ResearchScheduler(Protocol):
+    async def create_research_job(
+        self, appointment: Appointment, research_start_at: datetime, delivery_at: datetime
+    ) -> str: ...
+
+    async def update_research_job(
+        self,
+        job_id: str,
+        appointment: Appointment,
+        research_start_at: datetime,
+        delivery_at: datetime,
+    ) -> None: ...
+
+    async def delete_job(self, job_id: str) -> None: ...
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -23,9 +41,24 @@ def _parse_datetime(value: str) -> datetime:
     return parsed
 
 
+def _description_as_text(description: str) -> str:
+    """Normalize both plain text and Google Calendar's HTML descriptions."""
+
+    value = html.unescape(description or "")
+    if re.search(r"</?[a-z][^>]*>", value, re.I):
+        soup = BeautifulSoup(value, "html.parser")
+        for tag in soup.find_all(["br", "div", "p", "li"]):
+            if tag.name == "br":
+                tag.replace_with("\n")
+            else:
+                tag.append("\n")
+        value = soup.get_text("")
+    return value.replace("\xa0", " ")
+
+
 def parse_description(description: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for line in description.splitlines():
+    for line in _description_as_text(description).splitlines():
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
@@ -170,7 +203,7 @@ class CalendarIngestionService:
         self,
         gateway: CalendarGateway,
         store: WorkflowStore,
-        hermes: HermesClient,
+        hermes: ResearchScheduler,
         *,
         calendar_id: str,
         title_prefix: str,
@@ -239,7 +272,8 @@ class CalendarIngestionService:
             delivery_at = appointment.start_at - timedelta(
                 minutes=self.precall_delivery_minutes
             )
-            if existing and existing.research_job_id:
+            can_update = getattr(self.hermes, "can_update_job", lambda _: True)
+            if existing and existing.research_job_id and can_update(existing.research_job_id):
                 await self.hermes.update_research_job(
                     existing.research_job_id,
                     appointment,
@@ -256,5 +290,16 @@ class CalendarIngestionService:
                 )
                 result.scheduled += 1
             self.store.set_research_job(event_id, job_id, research_start)
+            self.store.upsert_artifact(
+                Artifact(
+                    id=None,
+                    calendar_event_id=event_id,
+                    kind="precall_research",
+                    title=f"{appointment.company} pre-call intelligence",
+                    status=ArtifactStatus.SCHEDULED,
+                    source_id=job_id,
+                    notes=f"Scheduled to collect evidence at {research_start.isoformat()}",
+                )
+            )
 
         return result
