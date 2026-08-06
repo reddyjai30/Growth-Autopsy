@@ -1,0 +1,4 @@
+interface:
+  display_name: "Marketing Strategy Writer"
+  short_description: "Draft an evidence-backed 90-day marketing strategy"
+  default_prompt: "Create an evidence-backed 90-day marketing strategy draft for Diksha to edit and price."

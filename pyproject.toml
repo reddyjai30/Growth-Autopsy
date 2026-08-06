@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "growth-autopsy-poc"
+version = "0.1.0"
+description = "Calendar-to-Fathom orchestration for the Growth Autopsy POC"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "google-api-python-client>=2.177,<3",
+  "google-auth>=2.40,<3",
+  "httpx>=0.28,<1",
+  "pydantic-settings>=2.10,<3",
+  "python-dotenv>=1.1,<2",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyyaml>=6.0,<7",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+]
+
+[project.scripts]
+growth-autopsy = "growth_autopsy.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/growth_autopsy"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"

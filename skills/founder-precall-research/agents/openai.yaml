@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Pre-call Research"
+  short_description: "Research a founder and company before a discovery call"
+  default_prompt: "Research this founder and company and produce an evidence-backed 10 positives, 10 gaps, and 5 questions brief."

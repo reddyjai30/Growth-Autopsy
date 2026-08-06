@@ -1,0 +1,4 @@
+interface:
+  display_name: "Growth Autopsy Writer"
+  short_description: "Draft a founder growth diagnostic from evidence"
+  default_prompt: "Draft a public-safe founder growth autopsy from the approved evidence and transcript."

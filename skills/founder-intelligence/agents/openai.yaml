@@ -1,0 +1,4 @@
+interface:
+  display_name: "Founder Intelligence"
+  short_description: "Extract grounded intelligence from a founder call"
+  default_prompt: "Analyze this founder call transcript and extract grounded problems, goals, numbers, objections, and opportunities."
