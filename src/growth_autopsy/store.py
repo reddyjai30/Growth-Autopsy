@@ -555,7 +555,7 @@ class WorkflowStore:
                     recording["calendar_event_id"],
                     "analysis_started",
                     "Founder Intelligence started",
-                    "Hermes is analyzing the verified transcript.",
+                    "Direct AI analysis is queued for the verified transcript.",
                     payload={"recording_id": recording_id, "run_id": run_id},
                 )
 

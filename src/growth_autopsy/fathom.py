@@ -14,7 +14,6 @@ from typing import Mapping
 import httpx
 
 from .domain import AppointmentStatus, Recording, RecordingStatus
-from .hermes import HermesClient
 from .store import WorkflowStore
 
 
@@ -166,7 +165,6 @@ class FathomIngestionService:
     def __init__(
         self,
         store: WorkflowStore,
-        hermes: HermesClient,
         *,
         webhook_secret: str,
         transcript_dir: Path,
@@ -175,7 +173,6 @@ class FathomIngestionService:
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.store = store
-        self.hermes = hermes
         self.webhook_secret = webhook_secret
         self.transcript_dir = transcript_dir
         self.match_window_minutes = match_window_minutes
@@ -266,11 +263,7 @@ class FathomIngestionService:
                 appointment.calendar_event_id,
                 AppointmentStatus.TRANSCRIPT_READY,
             )
-            run_id = await self.hermes.start_postcall_run(
-                appointment,
-                recording_id,
-                str(transcript_path),
-            )
+            run_id = f"direct:{recording_id}"
             self.store.set_recording_analysis_run(recording_id, run_id)
             self.store.mark_appointment_status(
                 appointment.calendar_event_id,
@@ -278,7 +271,7 @@ class FathomIngestionService:
             )
             self.store.finish_webhook_delivery(webhook_id, success=True)
             return FathomIngestionResult(
-                status="analysis_started",
+                status="analysis_queued",
                 webhook_id=webhook_id,
                 recording_id=recording_id,
                 calendar_event_id=appointment.calendar_event_id,

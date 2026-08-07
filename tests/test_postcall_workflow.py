@@ -10,8 +10,16 @@ from growth_autopsy.controller import (
     collect_agent_outputs,
     publish_approved_package,
     queue_postcall_deliverables,
+    run_pending_postcall_analysis,
 )
-from growth_autopsy.domain import Artifact, ArtifactStatus, Appointment, AppointmentStatus
+from growth_autopsy.domain import (
+    Artifact,
+    ArtifactStatus,
+    Appointment,
+    AppointmentStatus,
+    Recording,
+    RecordingStatus,
+)
 from growth_autopsy.notion import NotionClient
 from growth_autopsy.store import WorkflowStore
 
@@ -52,6 +60,31 @@ class DeliverableHermes:
         return {"status": "completed", "output": f"# Draft from {run_id}"}
 
 
+class DirectPostcallAI:
+    model = "test-model"
+
+    def __init__(self):
+        self.deliverables: list[str] = []
+
+    async def synthesize_founder_intelligence(
+        self, appointment, fathom_payload, precall_report
+    ):
+        assert fathom_payload["recording_id"] == 901
+        assert "Pre-call" in precall_report
+        return (
+            "## Meeting Metadata\nVerified call\n"
+            "## Strategy-Intent Classification\nFounder requested a strategy.\n"
+            "<!-- strategy_intent: strategy_requested -->"
+        )
+
+    async def synthesize_postcall_deliverable(
+        self, kind, appointment, founder_intelligence, precall_report
+    ):
+        self.deliverables.append(kind)
+        assert "strategy_requested" in founder_intelligence
+        return f"## Draft Status\n{kind} draft"
+
+
 @pytest.mark.asyncio
 async def test_strategy_call_queues_and_collects_three_documents(tmp_path) -> None:
     settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
@@ -86,6 +119,66 @@ async def test_strategy_call_queues_and_collects_three_documents(tmp_path) -> No
     assert len(results) == 3
     assert all(result["status"] == "ready" for result in results)
     assert store.get_appointment(item.calendar_event_id).status == AppointmentStatus.CONTENT_DRAFTED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_direct_postcall_worker_creates_intelligence_and_three_documents(
+    tmp_path,
+) -> None:
+    settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    store = WorkflowStore(settings.database_path)
+    store.initialize()
+    item = appointment()
+    item.status = AppointmentStatus.ANALYSIS_RUNNING
+    store.upsert_appointment(item)
+    store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=item.calendar_event_id,
+            kind="precall_research",
+            title="Pre-call intelligence",
+            status=ArtifactStatus.READY,
+            content="## Pre-call\nEvidence",
+        )
+    )
+    store.save_recording(
+        Recording(
+            recording_id=901,
+            webhook_id="message-901",
+            calendar_event_id=item.calendar_event_id,
+            meeting_title=item.title,
+            scheduled_start_at=item.start_at,
+            recording_start_at=item.start_at,
+            recording_end_at=item.end_at,
+            external_invitee_emails=[item.founder_email],
+            transcript_path=str(tmp_path / "901.md"),
+            payload={"recording_id": 901, "transcript": []},
+            status=RecordingStatus.ANALYSIS_RUNNING,
+            analysis_run_id="direct:901",
+        )
+    )
+    ai = DirectPostcallAI()
+
+    results = await run_pending_postcall_analysis(
+        settings, store, ai  # type: ignore[arg-type]
+    )
+
+    assert results[0]["status"] == "ready"
+    assert results[0]["strategy_intent"] == "strategy_requested"
+    assert set(ai.deliverables) == {
+        "growth_autopsy",
+        "strategy_doc",
+        "pitch_deck_brief",
+    }
+    assert store.get_recording(901).status == RecordingStatus.ANALYSIS_COMPLETE  # type: ignore[union-attr]
+    assert store.get_appointment(item.calendar_event_id).status == AppointmentStatus.CONTENT_DRAFTED  # type: ignore[union-attr]
+    for kind in (
+        "founder_intelligence",
+        "growth_autopsy",
+        "strategy_doc",
+        "pitch_deck_brief",
+    ):
+        assert store.get_artifact_by_kind(item.calendar_event_id, kind).status == ArtifactStatus.READY  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
