@@ -53,17 +53,8 @@ def test_verify_fathom_signature_rejects_replay() -> None:
         verify_fathom_signature(WEBHOOK_SECRET, headers, body, now=received_at)
 
 
-class FakeHermes:
-    def __init__(self):
-        self.calls: list[tuple] = []
-
-    async def start_postcall_run(self, appointment, recording_id, transcript_path):
-        self.calls.append((appointment, recording_id, transcript_path))
-        return "run-123"
-
-
 @pytest.mark.asyncio
-async def test_fathom_ingestion_matches_calendar_and_starts_analysis(tmp_path) -> None:
+async def test_fathom_ingestion_matches_calendar_and_queues_direct_analysis(tmp_path) -> None:
     store = WorkflowStore(tmp_path / "state.db")
     store.initialize()
     store.upsert_appointment(
@@ -105,10 +96,8 @@ async def test_fathom_ingestion_matches_calendar_and_starts_analysis(tmp_path) -
     body = json.dumps(payload, separators=(",", ":")).encode()
     now = datetime.now(UTC)
     headers = signed_headers("msg-777", body, now)
-    hermes = FakeHermes()
     service = FathomIngestionService(
         store,
-        hermes,  # type: ignore[arg-type]
         webhook_secret=WEBHOOK_SECRET,
         transcript_dir=tmp_path / "transcripts",
         match_window_minutes=20,
@@ -116,18 +105,16 @@ async def test_fathom_ingestion_matches_calendar_and_starts_analysis(tmp_path) -
 
     result = await service.ingest(body, headers)
 
-    assert result.status == "analysis_started"
+    assert result.status == "analysis_queued"
     assert result.calendar_event_id == "event-123"
-    assert result.analysis_run_id == "run-123"
-    assert len(hermes.calls) == 1
+    assert result.analysis_run_id == "direct:777"
     recording = store.get_recording(777)
     assert recording is not None
-    assert recording.analysis_run_id == "run-123"
+    assert recording.analysis_run_id == "direct:777"
     assert (tmp_path / "transcripts" / "777.md").exists()
 
     duplicate = await service.ingest(body, headers)
     assert duplicate.status == "duplicate"
-    assert len(hermes.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -182,7 +169,6 @@ async def test_fathom_fetches_transcript_when_webhook_omits_it(tmp_path) -> None
 
     service = FathomIngestionService(
         store,
-        FakeHermes(),  # type: ignore[arg-type]
         webhook_secret=WEBHOOK_SECRET,
         transcript_dir=tmp_path / "transcripts",
         match_window_minutes=20,
@@ -191,5 +177,5 @@ async def test_fathom_fetches_transcript_when_webhook_omits_it(tmp_path) -> None
     )
     result = await service.ingest(body, signed_headers("msg-778", body, now))
 
-    assert result.status == "analysis_started"
+    assert result.status == "analysis_queued"
     assert "retention plan" in (tmp_path / "transcripts" / "778.md").read_text()

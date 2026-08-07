@@ -19,7 +19,8 @@ from .controller import (
     dashboard_payload,
     publish_approved_package,
     record_sync_error,
-    resolve_strategy_decision,
+    resolve_strategy_decision_direct,
+    revise_postcall_artifact_direct,
     run_due_precall_research,
     sync_calendar_once,
 )
@@ -30,7 +31,6 @@ from .documents import (
     resolve_artifact_source,
 )
 from .fathom import FathomIngestionService, FathomWebhookError
-from .hermes import HermesClient, HermesError
 from .store import WorkflowStore
 
 
@@ -40,16 +40,6 @@ def get_store() -> WorkflowStore:
     store = WorkflowStore(settings.database_path)
     store.initialize()
     return store
-
-
-def get_hermes(settings: Settings = Depends(get_settings)) -> HermesClient:
-    return HermesClient(
-        settings.hermes_base_url,
-        settings.hermes_api_key,
-        model=settings.hermes_model,
-        provider=settings.hermes_provider,
-        delivery_target=settings.hermes_delivery_target,
-    )
 
 
 def get_ai(settings: Settings = Depends(get_settings)) -> AIClient:
@@ -97,7 +87,6 @@ async def fathom_webhook(
     request: Request,
     settings: Settings = Depends(get_settings),
     store: WorkflowStore = Depends(get_store),
-    hermes: HermesClient = Depends(get_hermes),
 ) -> dict:
     content_length = int(request.headers.get("content-length", "0") or 0)
     if content_length > settings.max_fathom_webhook_bytes:
@@ -108,7 +97,6 @@ async def fathom_webhook(
 
     service = FathomIngestionService(
         store,
-        hermes,
         webhook_secret=settings.fathom_webhook_secret,
         transcript_dir=settings.shared_workdir / "transcripts",
         match_window_minutes=settings.fathom_match_window_minutes,
@@ -118,7 +106,7 @@ async def fathom_webhook(
         result = await service.ingest(raw_body, request.headers)
     except FathomWebhookError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-    except (HermesError, ValueError, KeyError) as exc:
+    except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {
         "status": result.status,
@@ -229,7 +217,7 @@ async def artifact_decision(
     decision: DecisionRequest,
     settings: Settings = Depends(get_settings),
     store: WorkflowStore = Depends(get_store),
-    hermes: HermesClient = Depends(get_hermes),
+    ai: AIClient = Depends(get_ai),
 ) -> dict:
     artifact = store.get_artifact(artifact_id)
     if artifact is None:
@@ -259,30 +247,16 @@ async def artifact_decision(
         "strategy_doc",
         "pitch_deck_brief",
     }:
-        appointment = store.get_appointment(artifact.calendar_event_id)
-        if appointment is None or not artifact.file_path:
-            raise HTTPException(status_code=409, detail="Draft source file is unavailable")
         try:
-            run_id = await hermes.start_revision_run(
-                artifact.kind,
-                appointment,
-                current_draft_path=artifact.file_path,
-                revision_notes=decision.notes.strip(),
+            return await revise_postcall_artifact_direct(
+                settings,
+                store,
+                ai,
+                artifact,
+                decision.notes.strip(),
             )
-        except HermesError as exc:
+        except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        store.update_artifact(
-            artifact_id,
-            status=ArtifactStatus.PROCESSING,
-            source_id=f"run:{run_id}",
-            notes=f"Revision running: {decision.notes.strip()}",
-        )
-        return {
-            "artifact_id": artifact_id,
-            "status": ArtifactStatus.PROCESSING.value,
-            "revision_run_id": run_id,
-            "publication": None,
-        }
     store.update_artifact(artifact_id, status=new_status, notes=decision.notes.strip())
     publication = None
     if new_status == ArtifactStatus.APPROVED and settings.notion_publish_after_approval:
@@ -309,13 +283,14 @@ class StrategyDecisionRequest(BaseModel):
 async def strategy_decision(
     calendar_event_id: str,
     request: StrategyDecisionRequest,
+    settings: Settings = Depends(get_settings),
     store: WorkflowStore = Depends(get_store),
-    hermes: HermesClient = Depends(get_hermes),
+    ai: AIClient = Depends(get_ai),
 ) -> dict:
     intent = request.intent.strip().casefold()
     try:
-        queued = await resolve_strategy_decision(
-            store, hermes, calendar_event_id, intent
+        queued = await resolve_strategy_decision_direct(
+            settings, store, ai, calendar_event_id, intent
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

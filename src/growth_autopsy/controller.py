@@ -389,6 +389,304 @@ def classify_strategy_intent(appointment: Appointment, founder_intelligence: str
     return matches[-1].casefold() if matches else "unsure"
 
 
+def _precall_report_content(store: WorkflowStore, event_id: str) -> str:
+    artifact = store.get_artifact_by_kind(event_id, "precall_research")
+    if artifact is None:
+        return ""
+    if artifact.content.strip():
+        return artifact.content.strip()
+    if artifact.file_path:
+        path = Path(artifact.file_path)
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    return ""
+
+
+async def _generate_direct_deliverable(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    appointment: Appointment,
+    kind: str,
+    founder_intelligence: str,
+    precall_report: str,
+) -> dict[str, Any]:
+    existing = store.get_artifact_by_kind(appointment.calendar_event_id, kind)
+    if existing and existing.status in {
+        ArtifactStatus.READY,
+        ArtifactStatus.APPROVED,
+    } and existing.content.strip():
+        return {"kind": kind, "status": "already_ready", "artifact_id": existing.id}
+    filename, title = DELIVERABLES[kind]
+    artifact_id = store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=appointment.calendar_event_id,
+            kind=kind,
+            title=f"{appointment.company} {title}",
+            status=ArtifactStatus.PROCESSING,
+            source_id=f"direct:{ai.model}",
+            notes="Direct AI draft generation is running",
+        )
+    )
+    try:
+        document = await ai.synthesize_postcall_deliverable(
+            kind,
+            appointment,
+            founder_intelligence,
+            precall_report,
+        )
+        path = _artifact_directory(settings, appointment) / filename
+        _atomic_write_text(path, document.rstrip() + "\n")
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.READY,
+            file_path=str(path),
+            content=document,
+            notes="Direct AI draft completed; waiting for Diksha approval",
+        )
+        return {"kind": kind, "status": "ready", "artifact_id": artifact_id}
+    except Exception as exc:
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.FAILED,
+            notes=str(exc)[:1000],
+        )
+        raise
+
+
+async def run_direct_postcall_analysis(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    recording_id: int,
+) -> dict[str, Any]:
+    recording = store.get_recording(recording_id)
+    if recording is None:
+        return {"recording_id": recording_id, "status": "missing"}
+    if recording.status == RecordingStatus.ANALYSIS_COMPLETE:
+        return {"recording_id": recording_id, "status": "already_complete"}
+    if not recording.calendar_event_id:
+        return {"recording_id": recording_id, "status": "unmatched"}
+    appointment = store.get_appointment(recording.calendar_event_id)
+    if appointment is None:
+        return {"recording_id": recording_id, "status": "unmatched"}
+    precall_report = _precall_report_content(store, appointment.calendar_event_id)
+    try:
+        intelligence = store.get_artifact_by_kind(
+            appointment.calendar_event_id, "founder_intelligence"
+        )
+        if (
+            intelligence is not None
+            and intelligence.status in {ArtifactStatus.READY, ArtifactStatus.APPROVED}
+            and intelligence.content.strip()
+        ):
+            founder_intelligence = intelligence.content
+        else:
+            founder_intelligence = await ai.synthesize_founder_intelligence(
+                appointment,
+                recording.payload,
+                precall_report,
+            )
+            path = _artifact_directory(settings, appointment) / "founder-intelligence.md"
+            _atomic_write_text(path, founder_intelligence.rstrip() + "\n")
+            store.upsert_artifact(
+                Artifact(
+                    id=None,
+                    calendar_event_id=appointment.calendar_event_id,
+                    kind="founder_intelligence",
+                    title=f"{appointment.company} founder intelligence",
+                    status=ArtifactStatus.READY,
+                    source_id=f"direct:{ai.model}",
+                    file_path=str(path),
+                    content=founder_intelligence,
+                    notes="Generated directly from the verified Fathom payload",
+                )
+            )
+        store.mark_appointment_status(
+            appointment.calendar_event_id, AppointmentStatus.INTELLIGENCE_READY
+        )
+        intent = classify_strategy_intent(appointment, founder_intelligence)
+        store.set_setting(f"strategy_intent:{appointment.calendar_event_id}", intent)
+        kinds = ["growth_autopsy"]
+        if intent == "strategy_requested":
+            kinds.extend(["strategy_doc", "pitch_deck_brief"])
+        elif intent == "unsure":
+            store.upsert_artifact(
+                Artifact(
+                    id=None,
+                    calendar_event_id=appointment.calendar_event_id,
+                    kind="strategy_decision",
+                    title=f"{appointment.company} strategy decision",
+                    status=ArtifactStatus.READY,
+                    content=(
+                        "Strategy intent was ambiguous. Diksha must choose "
+                        "strategy_requested or case_study_only before strategy/deck generation."
+                    ),
+                    notes="Human routing decision required",
+                )
+            )
+        generated: list[dict[str, Any]] = []
+        for kind in kinds:
+            generated.append(
+                await _generate_direct_deliverable(
+                    settings,
+                    store,
+                    ai,
+                    appointment,
+                    kind,
+                    founder_intelligence,
+                    precall_report,
+                )
+            )
+        store.mark_recording_status(recording_id, RecordingStatus.ANALYSIS_COMPLETE)
+        _refresh_content_status(store, appointment.calendar_event_id)
+        return {
+            "recording_id": recording_id,
+            "status": "ready",
+            "strategy_intent": intent,
+            "generated": generated,
+        }
+    except Exception as exc:
+        message = str(exc)[:1000]
+        store.mark_recording_status(recording_id, RecordingStatus.FAILED, message)
+        store.mark_appointment_status(
+            appointment.calendar_event_id, AppointmentStatus.FAILED, message
+        )
+        raise
+
+
+async def run_pending_postcall_analysis(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for recording in store.list_recordings():
+        if (
+            recording.status == RecordingStatus.FAILED
+            and not recording.analysis_run_id
+            and "HERMES" in (recording.last_error or "").upper()
+            and recording.calendar_event_id
+        ):
+            store.set_recording_analysis_run(
+                recording.recording_id, f"direct:{recording.recording_id}"
+            )
+            store.mark_appointment_status(
+                recording.calendar_event_id, AppointmentStatus.ANALYSIS_RUNNING
+            )
+            recording = store.get_recording(recording.recording_id) or recording
+        if (
+            recording.status != RecordingStatus.ANALYSIS_RUNNING
+            or not recording.analysis_run_id
+            or not recording.analysis_run_id.startswith("direct:")
+        ):
+            continue
+        try:
+            results.append(
+                await run_direct_postcall_analysis(
+                    settings, store, ai, recording.recording_id
+                )
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "recording_id": recording.recording_id,
+                    "status": "failed",
+                    "error": str(exc)[:1000],
+                }
+            )
+    return results
+
+
+async def resolve_strategy_decision_direct(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    event_id: str,
+    intent: str,
+) -> list[dict[str, Any]]:
+    if intent not in {"strategy_requested", "case_study_only"}:
+        raise ValueError("Strategy decision must be strategy_requested or case_study_only")
+    appointment = store.get_appointment(event_id)
+    intelligence = store.get_artifact_by_kind(event_id, "founder_intelligence")
+    if appointment is None or intelligence is None or not intelligence.content.strip():
+        raise ValueError("Founder Intelligence is required before routing deliverables")
+    decision = store.get_artifact_by_kind(event_id, "strategy_decision")
+    if decision and decision.id:
+        store.update_artifact(
+            decision.id,
+            status=ArtifactStatus.APPROVED,
+            notes=f"Diksha selected {intent}",
+        )
+    store.set_setting(f"strategy_intent:{event_id}", intent)
+    kinds = ["growth_autopsy"]
+    if intent == "strategy_requested":
+        kinds.extend(["strategy_doc", "pitch_deck_brief"])
+    precall_report = _precall_report_content(store, event_id)
+    results: list[dict[str, Any]] = []
+    for kind in kinds:
+        results.append(
+            await _generate_direct_deliverable(
+                settings,
+                store,
+                ai,
+                appointment,
+                kind,
+                intelligence.content,
+                precall_report,
+            )
+        )
+    _refresh_content_status(store, event_id)
+    return results
+
+
+async def revise_postcall_artifact_direct(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    artifact: Artifact,
+    revision_notes: str,
+) -> dict[str, Any]:
+    appointment = store.get_appointment(artifact.calendar_event_id)
+    if appointment is None:
+        raise ValueError("Appointment not found")
+    if artifact.kind not in DELIVERABLES:
+        raise ValueError("Only generated post-call drafts can be revised")
+    if not artifact.content.strip():
+        raise ValueError("Current draft content is unavailable")
+    store.update_artifact(
+        artifact.id or 0,
+        status=ArtifactStatus.PROCESSING,
+        notes=f"Direct AI revision running: {revision_notes}",
+    )
+    try:
+        revised = await ai.revise_postcall_deliverable(
+            artifact.kind, artifact.content, revision_notes
+        )
+        filename, _ = DELIVERABLES[artifact.kind]
+        path = Path(artifact.file_path) if artifact.file_path else (
+            _artifact_directory(settings, appointment) / filename
+        )
+        _atomic_write_text(path, revised.rstrip() + "\n")
+        store.update_artifact(
+            artifact.id or 0,
+            status=ArtifactStatus.READY,
+            source_id=f"direct:{ai.model}",
+            file_path=str(path),
+            content=revised,
+            notes="Direct AI revision completed; waiting for Diksha approval",
+        )
+        return {"artifact_id": artifact.id, "status": ArtifactStatus.READY.value}
+    except Exception as exc:
+        store.update_artifact(
+            artifact.id or 0,
+            status=ArtifactStatus.FAILED,
+            notes=str(exc)[:1000],
+        )
+        raise
+
+
 async def _queue_deliverable(
     store: WorkflowStore,
     hermes: HermesClient,
@@ -708,6 +1006,10 @@ async def automation_loop(
             record_sync_error(store, exc)
         try:
             await run_due_precall_research(settings, store, ai)
+        except Exception as exc:
+            store.set_setting("automation_last_error", str(exc)[:1000])
+        try:
+            await run_pending_postcall_analysis(settings, store, ai)
         except Exception as exc:
             store.set_setting("automation_last_error", str(exc)[:1000])
         store.set_setting("automation_last_tick_at", datetime.now(UTC).isoformat())
