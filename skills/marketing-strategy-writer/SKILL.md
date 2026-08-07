@@ -14,7 +14,7 @@ metadata:
 
 Draft a practical 90-day marketing strategy from public research and founder
 intelligence. Leave service selection, commercial positioning, and pricing for
-Diksha to decide before any pitch deck is generated.
+Diksha; a parallel deck brief may contain explicit placeholders only.
 
 ## When to Use
 
@@ -33,7 +33,7 @@ Read `references/strategy-output-contract.md` before drafting.
 ## How to Run
 
 Use the supplied evidence to draft recommendations and explicitly surface missing
-inputs. Return an internal strategy document; do not create a final deck, send a
+inputs. Return an internal strategy document; do not export a final deck, send a
 proposal, or determine a price.
 
 ## Quick Reference
@@ -66,7 +66,7 @@ Separate quick wins from foundational work and experiments.
 - Do not promise revenue or fixed growth outcomes.
 - Do not invent budget, margin, conversion rate, CAC, or team capacity.
 - Do not set pricing or package scope without Diksha.
-- Do not generate the pitch deck before Diksha approves strategy and commercials.
+- Do not export or send a final pitch deck before Diksha approves strategy and commercials.
 
 ## Verification
 

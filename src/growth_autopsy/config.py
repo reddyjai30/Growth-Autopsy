@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     calendar_lookback_hours: int = Field(default=24, ge=0, le=168)
     precall_start_minutes: int = Field(default=60, ge=30, le=240)
     precall_delivery_minutes: int = Field(default=30, ge=5, le=120)
+
     precall_research_backend: str = "local_free"
     precall_max_pages: int = Field(default=12, ge=1, le=30)
     precall_max_concurrency: int = Field(default=4, ge=1, le=10)
@@ -45,9 +46,34 @@ class Settings(BaseSettings):
     precall_local_lighthouse_timeout_seconds: int = Field(default=90, ge=30, le=180)
     precall_collection_stale_minutes: int = Field(default=20, ge=5, le=120)
     precall_max_parallel_appointments: int = Field(default=2, ge=1, le=5)
+    playwright_enabled: bool = True
+    playwright_timeout_seconds: int = Field(default=30, ge=5, le=90)
+    playwright_settle_milliseconds: int = Field(default=1500, ge=0, le=10000)
 
+    # Semrush has no unrestricted free SEO/traffic API. These settings activate
+    # the official paid API only when a licensed key is supplied.
+    semrush_api_key: str = ""
+    semrush_database: str = "us"
+    semrush_country: str = "us"
+    semrush_timeout_seconds: int = Field(default=20, ge=5, le=60)
+    semrush_mcp_enabled: bool = False
+    semrush_mcp_url: str = "https://mcp.semrush.com/v2/mcp"
+    semrush_mcp_max_reports: int = Field(default=3, ge=1, le=5)
+
+    # Direct OpenAI-compatible model endpoint used for evidence synthesis.
+    # Hermes is deliberately not part of the Phase 1 runtime.
+    ai_base_url: str = "https://api.openai.com/v1"
+    ai_api_key: str = ""
+    ai_model: str = ""
+    ai_timeout_seconds: int = Field(default=120, ge=10, le=300)
+    ai_max_output_tokens: int = Field(default=6000, ge=1000, le=20000)
+
+    # Legacy Phase 2 fields remain temporarily so the existing Fathom routes
+    # can be migrated without discarding the already-built post-call work.
     hermes_base_url: str = "http://127.0.0.1:8642"
     hermes_api_key: str = ""
+    hermes_model: str = ""
+    hermes_provider: str = ""
     hermes_delivery_target: str = "local"
     hermes_cron_output_dir: Path = Field(
         default_factory=lambda: Path.home() / ".hermes" / "cron" / "output"
@@ -65,7 +91,10 @@ class Settings(BaseSettings):
         le=25 * 1024 * 1024,
     )
 
-    internal_api_key: str = ""
+    notion_api_key: str = ""
+    notion_parent_page_id: str = ""
+    notion_api_version: str = "2026-03-11"
+    notion_publish_after_approval: bool = True
 
     def resolve_paths(self, base_dir: Path | None = None) -> "Settings":
         base = (base_dir or Path.cwd()).resolve()

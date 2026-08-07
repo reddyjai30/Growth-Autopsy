@@ -1,0 +1,4 @@
+interface:
+  display_name: Pitch Deck Writer
+  short_description: Draft evidence-grounded Gamma deck briefs.
+  default_prompt: Draft a Gamma-ready pitch deck brief from approved source documents.

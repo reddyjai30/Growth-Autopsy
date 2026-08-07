@@ -22,7 +22,7 @@ def _now() -> str:
 
 
 def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
+    return value.astimezone(UTC).isoformat() if value is not None else None
 
 
 def _datetime(value: str | None) -> datetime | None:
@@ -68,6 +68,7 @@ class WorkflowStore:
                     founder_linkedin TEXT NOT NULL,
                     industry TEXT NOT NULL,
                     strategy_mode TEXT NOT NULL,
+                    meeting_agenda TEXT NOT NULL DEFAULT '',
                     start_at TEXT NOT NULL,
                     end_at TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -83,6 +84,11 @@ class WorkflowStore:
                     ON appointments(start_at);
                 CREATE INDEX IF NOT EXISTS idx_appointments_status
                     ON appointments(status);
+
+                CREATE TABLE IF NOT EXISTS dismissed_appointments (
+                    calendar_event_id TEXT PRIMARY KEY,
+                    dismissed_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS webhook_deliveries (
                     delivery_id TEXT PRIMARY KEY,
@@ -144,21 +150,82 @@ class WorkflowStore:
                     ON artifacts(calendar_event_id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_status
                     ON artifacts(status);
+
+                CREATE TABLE IF NOT EXISTS workflow_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    calendar_event_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT 'info',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(calendar_event_id)
+                        REFERENCES appointments(calendar_event_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workflow_events_event_created
+                    ON workflow_events(calendar_event_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workflow_events_created
+                    ON workflow_events(created_at DESC);
                 """
             )
+            appointment_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(appointments)")
+            }
+            if "meeting_agenda" not in appointment_columns:
+                conn.execute(
+                    "ALTER TABLE appointments ADD COLUMN meeting_agenda TEXT NOT NULL DEFAULT ''"
+                )
+            # Earlier builds preserved source offsets. Normalize legacy rows so
+            # SQLite range queries compare the same instant across Calendar and Fathom.
+            for table, primary_key, columns in (
+                ("appointments", "calendar_event_id", ("start_at", "end_at", "research_start_at")),
+                (
+                    "recordings",
+                    "recording_id",
+                    ("scheduled_start_at", "recording_start_at", "recording_end_at"),
+                ),
+            ):
+                rows = conn.execute(
+                    f"SELECT {primary_key}, {', '.join(columns)} FROM {table}"
+                ).fetchall()
+                for row in rows:
+                    updates = {
+                        column: _iso(_datetime(row[column]))
+                        for column in columns
+                        if row[column]
+                    }
+                    if not updates:
+                        continue
+                    assignments = ", ".join(f"{column}=?" for column in updates)
+                    conn.execute(
+                        f"UPDATE {table} SET {assignments} WHERE {primary_key}=?",
+                        [*updates.values(), row[primary_key]],
+                    )
 
-    def upsert_appointment(self, appointment: Appointment) -> None:
+    def upsert_appointment(self, appointment: Appointment) -> bool:
         now = _now()
         with self.connect() as conn:
+            dismissed = conn.execute(
+                "SELECT 1 FROM dismissed_appointments WHERE calendar_event_id=?",
+                (appointment.calendar_event_id,),
+            ).fetchone()
+            if dismissed:
+                return False
+            previous = conn.execute(
+                "SELECT etag, status, start_at FROM appointments WHERE calendar_event_id=?",
+                (appointment.calendar_event_id,),
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO appointments (
                     calendar_event_id, calendar_id, etag, title, company,
                     website, founder_name, founder_email, founder_linkedin,
-                    industry, strategy_mode, start_at, end_at, status,
+                    industry, strategy_mode, meeting_agenda, start_at, end_at, status,
                     research_job_id, research_start_at, source_payload_json,
                     last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(calendar_event_id) DO UPDATE SET
                     calendar_id=excluded.calendar_id,
                     etag=excluded.etag,
@@ -170,6 +237,7 @@ class WorkflowStore:
                     founder_linkedin=excluded.founder_linkedin,
                     industry=excluded.industry,
                     strategy_mode=excluded.strategy_mode,
+                    meeting_agenda=excluded.meeting_agenda,
                     start_at=excluded.start_at,
                     end_at=excluded.end_at,
                     status=excluded.status,
@@ -189,6 +257,7 @@ class WorkflowStore:
                     appointment.founder_linkedin,
                     appointment.industry,
                     appointment.strategy_mode,
+                    appointment.meeting_agenda,
                     _iso(appointment.start_at),
                     _iso(appointment.end_at),
                     appointment.status.value,
@@ -200,6 +269,69 @@ class WorkflowStore:
                     now,
                 ),
             )
+            if previous is None:
+                self._insert_event(
+                    conn,
+                    appointment.calendar_event_id,
+                    "booking_created",
+                    "Calendar booking added",
+                    f"{appointment.company} discovery call entered the pipeline.",
+                    payload={"status": appointment.status.value},
+                )
+            elif previous["etag"] != appointment.etag:
+                moved = previous["start_at"] != _iso(appointment.start_at)
+                self._insert_event(
+                    conn,
+                    appointment.calendar_event_id,
+                    "calendar_updated",
+                    "Calendar booking updated",
+                    "Call time changed." if moved else "Calendar details changed.",
+                    payload={"rescheduled": moved},
+                )
+        return True
+
+    def is_appointment_dismissed(self, calendar_event_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM dismissed_appointments WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            ).fetchone()
+        return row is not None
+
+    def delete_appointment(self, calendar_event_id: str) -> bool:
+        """Delete one workflow and suppress re-import of its Calendar event."""
+
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            exists = conn.execute(
+                "SELECT 1 FROM appointments WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            ).fetchone()
+            if exists is None:
+                return False
+            conn.execute(
+                "INSERT INTO dismissed_appointments (calendar_event_id, dismissed_at) "
+                "VALUES (?, ?) ON CONFLICT(calendar_event_id) DO UPDATE SET "
+                "dismissed_at=excluded.dismissed_at",
+                (calendar_event_id, _now()),
+            )
+            conn.execute(
+                "DELETE FROM workflow_events WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            )
+            conn.execute(
+                "DELETE FROM artifacts WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            )
+            conn.execute(
+                "DELETE FROM recordings WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            )
+            conn.execute(
+                "DELETE FROM appointments WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            )
+        return True
 
     def get_appointment(self, calendar_event_id: str) -> Appointment | None:
         with self.connect() as conn:
@@ -233,11 +365,19 @@ class WorkflowStore:
                 """,
                 (
                     job_id,
-                    research_start_at.isoformat(),
+                    _iso(research_start_at),
                     AppointmentStatus.RESEARCH_SCHEDULED.value,
                     _now(),
                     calendar_event_id,
                 ),
+            )
+            self._insert_event(
+                conn,
+                calendar_event_id,
+                "research_scheduled",
+                "Pre-call research scheduled",
+                f"Evidence collection is scheduled for {_iso(research_start_at)}.",
+                payload={"job_id": job_id},
             )
 
     def clear_research_job(self, calendar_event_id: str) -> None:
@@ -258,6 +398,10 @@ class WorkflowStore:
         error: str | None = None,
     ) -> None:
         with self.connect() as conn:
+            previous = conn.execute(
+                "SELECT status, last_error FROM appointments WHERE calendar_event_id=?",
+                (calendar_event_id,),
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE appointments
@@ -266,6 +410,19 @@ class WorkflowStore:
                 """,
                 (status.value, error, _now(), calendar_event_id),
             )
+            if previous and (
+                previous["status"] != status.value
+                or (error and previous["last_error"] != error)
+            ):
+                self._insert_event(
+                    conn,
+                    calendar_event_id,
+                    "status_changed",
+                    f"Workflow moved to {status.value.replace('_', ' ').title()}",
+                    error or f"Previous status: {previous['status']}",
+                    severity="error" if status == AppointmentStatus.FAILED else "info",
+                    payload={"from": previous["status"], "to": status.value},
+                )
 
     def cancel_appointment(self, calendar_event_id: str) -> None:
         self.mark_appointment_status(calendar_event_id, AppointmentStatus.CANCELLED)
@@ -324,6 +481,10 @@ class WorkflowStore:
     def save_recording(self, recording: Recording) -> None:
         now = _now()
         with self.connect() as conn:
+            previous = conn.execute(
+                "SELECT recording_id FROM recordings WHERE recording_id=?",
+                (recording.recording_id,),
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO recordings (
@@ -351,7 +512,7 @@ class WorkflowStore:
                     recording.webhook_id,
                     recording.calendar_event_id,
                     recording.meeting_title,
-                    recording.scheduled_start_at.isoformat(),
+                    _iso(recording.scheduled_start_at),
                     _iso(recording.recording_start_at),
                     _iso(recording.recording_end_at),
                     json.dumps(recording.external_invitee_emails),
@@ -364,9 +525,22 @@ class WorkflowStore:
                     now,
                 ),
             )
+            if previous is None and recording.calendar_event_id:
+                self._insert_event(
+                    conn,
+                    recording.calendar_event_id,
+                    "fathom_received",
+                    "Fathom transcript received",
+                    f"Recording {recording.recording_id} matched to this Calendar call.",
+                    payload={"recording_id": recording.recording_id},
+                )
 
     def set_recording_analysis_run(self, recording_id: int, run_id: str) -> None:
         with self.connect() as conn:
+            recording = conn.execute(
+                "SELECT calendar_event_id FROM recordings WHERE recording_id=?",
+                (recording_id,),
+            ).fetchone()
             conn.execute(
                 """
                 UPDATE recordings
@@ -375,6 +549,15 @@ class WorkflowStore:
                 """,
                 (run_id, RecordingStatus.ANALYSIS_RUNNING.value, _now(), recording_id),
             )
+            if recording and recording["calendar_event_id"]:
+                self._insert_event(
+                    conn,
+                    recording["calendar_event_id"],
+                    "analysis_started",
+                    "Founder Intelligence started",
+                    "Hermes is analyzing the verified transcript.",
+                    payload={"recording_id": recording_id, "run_id": run_id},
+                )
 
     def mark_recording_status(
         self,
@@ -417,6 +600,10 @@ class WorkflowStore:
     def upsert_artifact(self, artifact: Artifact) -> int:
         now = _now()
         with self.connect() as conn:
+            previous = conn.execute(
+                "SELECT id, status FROM artifacts WHERE calendar_event_id=? AND kind=?",
+                (artifact.calendar_event_id, artifact.kind),
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO artifacts (
@@ -449,6 +636,21 @@ class WorkflowStore:
                 "SELECT id FROM artifacts WHERE calendar_event_id=? AND kind=?",
                 (artifact.calendar_event_id, artifact.kind),
             ).fetchone()
+            if previous is None or previous["status"] != artifact.status.value:
+                action = "created" if previous is None else "updated"
+                self._insert_event(
+                    conn,
+                    artifact.calendar_event_id,
+                    "artifact_status",
+                    f"{artifact.title} {action}",
+                    f"Artifact status: {artifact.status.value.replace('_', ' ').title()}.",
+                    severity="error" if artifact.status == ArtifactStatus.FAILED else "info",
+                    payload={
+                        "artifact_id": int(row["id"]) if row else None,
+                        "kind": artifact.kind,
+                        "status": artifact.status.value,
+                    },
+                )
         if row is None:
             raise RuntimeError("Artifact insert did not return an id")
         return int(row["id"])
@@ -509,6 +711,10 @@ class WorkflowStore:
         ]
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            artifact = conn.execute(
+                "SELECT calendar_event_id, kind, title, status FROM artifacts WHERE id=?",
+                (artifact_id,),
+            ).fetchone()
             cursor = conn.execute(
                 f"""
                 UPDATE artifacts
@@ -517,6 +723,15 @@ class WorkflowStore:
                 """,
                 params,
             )
+            if cursor.rowcount == 1 and artifact:
+                self._insert_event(
+                    conn,
+                    artifact["calendar_event_id"],
+                    "artifact_processing",
+                    f"{artifact['title']} started",
+                    f"Previous status: {artifact['status']}.",
+                    payload={"artifact_id": artifact_id, "kind": artifact["kind"]},
+                )
         return cursor.rowcount == 1
 
     def update_artifact(
@@ -542,10 +757,29 @@ class WorkflowStore:
             values["notes"] = notes
         assignments = ", ".join(f"{key}=?" for key in values)
         with self.connect() as conn:
+            previous = conn.execute(
+                "SELECT calendar_event_id, kind, title, status FROM artifacts WHERE id=?",
+                (artifact_id,),
+            ).fetchone()
             conn.execute(
                 f"UPDATE artifacts SET {assignments} WHERE id=?",
                 [*values.values(), artifact_id],
             )
+            if previous and status is not None and previous["status"] != status.value:
+                self._insert_event(
+                    conn,
+                    previous["calendar_event_id"],
+                    "artifact_status",
+                    f"{previous['title']} is {status.value.replace('_', ' ').title()}",
+                    notes or f"Previous status: {previous['status']}.",
+                    severity="error" if status == ArtifactStatus.FAILED else "info",
+                    payload={
+                        "artifact_id": artifact_id,
+                        "kind": previous["kind"],
+                        "from": previous["status"],
+                        "to": status.value,
+                    },
+                )
 
     def match_appointment(
         self,
@@ -555,8 +789,9 @@ class WorkflowStore:
         window_minutes: int,
     ) -> Appointment | None:
         window = timedelta(minutes=window_minutes)
-        start = (scheduled_start_at - window).isoformat()
-        end = (scheduled_start_at + window).isoformat()
+        scheduled_utc = scheduled_start_at.astimezone(UTC)
+        start = (scheduled_utc - window).isoformat()
+        end = (scheduled_utc + window).isoformat()
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -564,19 +799,35 @@ class WorkflowStore:
                 WHERE start_at BETWEEN ? AND ? AND status != ?
                 ORDER BY ABS(strftime('%s', start_at) - strftime('%s', ?)) ASC
                 """,
-                (start, end, AppointmentStatus.CANCELLED.value, scheduled_start_at.isoformat()),
+                (start, end, AppointmentStatus.CANCELLED.value, scheduled_utc.isoformat()),
             ).fetchall()
 
         normalized_title = meeting_title.strip().casefold()
         emails = {email.strip().casefold() for email in external_invitee_emails if email}
-        candidates = [self._appointment_from_row(row) for row in rows]
-        for appointment in candidates:
-            if appointment.title.strip().casefold() == normalized_title:
-                return appointment
-        for appointment in candidates:
+        scored: list[tuple[int, float, Appointment]] = []
+        for row in rows:
+            appointment = self._appointment_from_row(row)
+            delta = abs((appointment.start_at - scheduled_start_at).total_seconds())
+            score = 0
+            if normalized_title and appointment.title.strip().casefold() == normalized_title:
+                score += 5
             if appointment.founder_email.strip().casefold() in emails:
-                return appointment
-        return candidates[0] if len(candidates) == 1 else None
+                score += 5
+            if delta <= 120:
+                score += 3
+            elif delta <= window.total_seconds():
+                score += 1
+            scored.append((score, delta, appointment))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        if not scored:
+            return None
+        best_score = scored[0][0]
+        tied = len(scored) > 1 and scored[1][0] == best_score
+        # A matching title/email is decisive. An exact scheduled time is accepted
+        # only when it identifies one unambiguous Calendar event.
+        if best_score >= 5 or (best_score >= 3 and not tied and len(scored) == 1):
+            return scored[0][2]
+        return None
 
     def set_setting(self, key: str, value: str) -> None:
         with self.connect() as conn:
@@ -596,6 +847,102 @@ class WorkflowStore:
                 (key,),
             ).fetchone()
         return str(row["value"]) if row else None
+
+    def add_workflow_event(
+        self,
+        calendar_event_id: str,
+        event_type: str,
+        title: str,
+        detail: str = "",
+        *,
+        severity: str = "info",
+        payload: dict | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            self._insert_event(
+                conn,
+                calendar_event_id,
+                event_type,
+                title,
+                detail,
+                severity=severity,
+                payload=payload,
+            )
+
+    def list_workflow_events(
+        self,
+        calendar_event_id: str | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[dict]:
+        safe_limit = max(1, min(limit, 500))
+        with self.connect() as conn:
+            if calendar_event_id:
+                rows = conn.execute(
+                    "SELECT * FROM workflow_events WHERE calendar_event_id=? "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (calendar_event_id, safe_limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM workflow_events ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "calendar_event_id": row["calendar_event_id"],
+                "event_type": row["event_type"],
+                "title": row["title"],
+                "detail": row["detail"],
+                "severity": row["severity"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def database_counts(self) -> dict[str, int]:
+        with self.connect() as conn:
+            return {
+                table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in (
+                    "appointments",
+                    "recordings",
+                    "artifacts",
+                    "workflow_events",
+                    "webhook_deliveries",
+                )
+            }
+
+    @staticmethod
+    def _insert_event(
+        conn: sqlite3.Connection,
+        calendar_event_id: str,
+        event_type: str,
+        title: str,
+        detail: str = "",
+        *,
+        severity: str = "info",
+        payload: dict | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO workflow_events (
+                calendar_event_id, event_type, title, detail,
+                severity, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                calendar_event_id,
+                event_type[:100],
+                title[:300],
+                detail[:2000],
+                severity if severity in {"info", "warning", "error", "success"} else "info",
+                json.dumps(payload or {}, separators=(",", ":")),
+                _now(),
+            ),
+        )
 
     @staticmethod
     def _recording_from_row(row: sqlite3.Row) -> Recording:
@@ -648,6 +995,7 @@ class WorkflowStore:
             start_at=_datetime(row["start_at"]),  # type: ignore[arg-type]
             end_at=_datetime(row["end_at"]),  # type: ignore[arg-type]
             status=AppointmentStatus(row["status"]),
+            meeting_agenda=row["meeting_agenda"],
             research_job_id=row["research_job_id"],
             research_start_at=_datetime(row["research_start_at"]),
             source_payload=json.loads(row["source_payload_json"]),

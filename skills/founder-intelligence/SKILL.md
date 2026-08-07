@@ -63,6 +63,10 @@ Extract:
    - `unsure`: mixed or ambiguous intent requiring Diksha's decision.
 9. Add a short rationale and timestamped evidence for the classification.
 10. Produce the Founder Intelligence document using the reference contract.
+11. End with exactly one machine-readable marker and no text after it:
+    `<!-- strategy_intent: strategy_requested -->`,
+    `<!-- strategy_intent: case_study_only -->`, or
+    `<!-- strategy_intent: unsure -->`.
 
 ## Pitfalls
 

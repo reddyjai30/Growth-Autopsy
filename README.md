@@ -1,25 +1,37 @@
-# Growth Autopsy POC
+# Growth Autopsy
 
 This service is the deterministic control plane for Diksha's calendar-to-content
 workflow. It gathers public evidence with free local collectors and gives that
-fixed evidence corpus to Gemini through Hermes for synthesis. It owns event
+fixed evidence corpus directly to a configured AI model for synthesis. It owns event
 parsing, durable state, scheduling, webhook security, deduplication, and
 meeting-to-appointment matching.
 
-## Implemented in the first vertical slice
+The durable product contract is in
+[docs/workflow-spec.md](docs/workflow-spec.md).
+
+## Implemented workflow
 
 - Google Calendar event parsing with a structured event-description contract
-- durable local pre-call scheduling at T-60, with a manual Run now control
-- bounded website crawl with robots.txt, sitemap and SSRF protection
-- free DuckDuckGo discovery search and on-page SEO/technology signals
+- durable T-60 evidence collection with a tracked T-30 report deadline and a
+  manual Run now control
+- bounded Playwright-rendered website crawl with robots.txt, sitemap and SSRF protection
+- free DuckDuckGo discovery search; on-page SEO, technology, social, marketplace
+  and ad-transparency discovery signals
 - Google PageSpeed with pinned local Lighthouse fallback
-- evidence JSON/Markdown and Gemini-synthesized report artifacts
-- responsive operator dashboard with progress, downloads and approval controls
-- SQLite workflow state and webhook-attempt history
+- durable evidence JSON/Markdown plus a validated, directly synthesized
+  pre-call report rendered as polished HTML and cached PDF
+- responsive marketing operations dashboard with a nine-stage Jira-style board,
+  table view, live progress/analysis states, focused workflow details, browser
+  report viewing and PDF export
+- SQLite workflow state, webhook-attempt history and a durable workflow audit log
 - Fathom webhook signature verification and replay protection
 - transcript persistence with speaker names and timestamps
 - Fathom-to-calendar matching by time, title, and external attendee email
-- post-call Founder Intelligence run submission to Hermes
+- Fathom API transcript fallback when a verified webhook omits transcript content
+- post-call Founder Intelligence plus conditional Growth Autopsy, 90-day strategy,
+  and Gamma-ready pitch-deck brief scaffolding for the next direct-AI phase
+- explicit `unsure` strategy-routing pause for Diksha
+- approval-gated, idempotent private Notion page creation
 - local operator API and CLI
 
 ## Local setup
@@ -27,6 +39,7 @@ meeting-to-appointment matching.
 ```bash
 cp .env.example .env
 uv sync --extra dev
+uv run playwright install chromium
 npm install
 uv run growth-autopsy init-db
 uv run growth-autopsy serve
@@ -45,23 +58,38 @@ another HTTPS tunnel for the Fathom destination URL:
 https://your-poc-host.example/webhooks/fathom
 ```
 
-## Required accounts and credentials
+## Phase 1 accounts and credentials
 
-1. Enable the Hermes API server and set `API_SERVER_KEY` in the active Hermes
-   profile.
-2. Complete OAuth for Hermes' bundled `google-workspace` skill and point
-   `GA_GOOGLE_TOKEN_FILE` at its authorized-user token.
-3. In Fathom Settings → API Access, create a webhook with transcript, summary,
-   action items, and CRM matches enabled. Store its `whsec_...` secret as
-   `GA_FATHOM_WEBHOOK_SECRET`.
-4. Copy the four folders under `skills/` into the active Hermes profile's
-   `skills/` directory before scheduling the first call.
+1. Create a dedicated Calendar-read-only token with `growth-autopsy
+   calendar-auth`.
+2. Configure `GA_AI_BASE_URL`, `GA_AI_API_KEY`, and `GA_AI_MODEL` for an
+   OpenAI-compatible model endpoint.
 
-Do not expose the Hermes API server directly to the public internet. Only the
-Fathom webhook service should be tunneled, and Fathom requests are accepted
-only after their timestamped signature validates.
+Semrush is optional. Its official API and MCP server consume a qualifying paid
+subscription/API units; there is no unrestricted free SEO/traffic API. Leave
+`GA_SEMRUSH_API_KEY` empty to use the public Playwright/search baseline without
+inventing unavailable traffic data.
+
+For the exact first activation sequence, including regenerating the Google
+Desktop OAuth JSON, configuring the direct model, and optionally connecting
+Semrush MCP, follow
+[docs/phase-1-calendar-precall.md](docs/phase-1-calendar-precall.md).
+
+Fathom and Notion credentials are not required for the Phase 1 live test. They
+are configured only when the post-call phase begins.
 
 Open `http://127.0.0.1:8787` for the operator dashboard.
+
+The dashboard reads directly from the workflow SQL database. Each card uses the
+Calendar meeting title and moves across the complete Booking → Pre-call → Call →
+Transcript → AI Analysis → Case Study → Strategy + Deck → Approval → Notion
+workflow. Switch between the Jira-style board and compact table. The meeting
+drawer keeps the next action, progress, marketing context, documents and approval
+decisions visible while technical activity stays collapsed. Completed reports
+open as polished, print-ready HTML and download as cached A4 PDFs; raw Markdown
+is not exposed by the UI. The local dashboard opens directly without an access
+key. Keep it bound to a trusted machine or protect it at the network edge before
+exposing it publicly.
 
 ## Calendar automation
 
@@ -73,13 +101,20 @@ uv run growth-autopsy calendar-sync
 ```
 
 Use [config/calendar-event-template.md](config/calendar-event-template.md) for
-all discovery calls. Missing company or website data moves the appointment to
+all discovery calls. `Company Name` and `Company Website` are required. Founder
+email, founder LinkedIn and the meeting agenda are optional inputs used to enrich
+the report. Missing company or website data moves the appointment to
 `NEEDS_INPUT` and deliberately prevents research from being scheduled.
 
 ## Current boundary
 
-The POC completes calendar ingestion, pre-call collection/synthesis, report
-review controls, Fathom transcript ingestion and Founder Intelligence handoff.
-Google Docs, public Notion publishing, LinkedIn queuing, deck export and
-two-founder newsletter batching remain later slices. Nothing publishes without
-explicit business approval.
+The service completes Calendar booking resolution, T-30 pre-call research,
+Fathom transcript ingestion, Founder Intelligence, conditional document
+generation, Diksha approval, and private Notion package creation. Licensed
+Similarweb/Semrush/Ahrefs data is not fabricated when unavailable. Final Gamma
+export, founder-email consent, public Notion publishing, LinkedIn queuing, and
+two-founder newsletter batching remain later slices. Nothing public is released
+without founder consent.
+
+See [docs/production-runbook.md](docs/production-runbook.md) for environment and
+webhook setup.

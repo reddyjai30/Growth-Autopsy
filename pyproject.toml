@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "growth-autopsy-poc"
-version = "0.1.0"
-description = "Calendar-to-Fathom orchestration for the Growth Autopsy POC"
+name = "growth-autopsy"
+version = "0.4.0"
+description = "Calendar-to-Fathom production workflow for Growth Autopsy"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
@@ -13,8 +13,11 @@ dependencies = [
   "fastapi>=0.116,<1",
   "google-api-python-client>=2.177,<3",
   "google-auth>=2.40,<3",
+  "google-auth-oauthlib>=1.2,<2",
   "httpx>=0.28,<1",
+  "mcp>=1.28,<2",
   "pydantic-settings>=2.10,<3",
+  "playwright>=1.52,<2",
   "python-dotenv>=1.1,<2",
   "uvicorn>=0.35,<1",
 ]

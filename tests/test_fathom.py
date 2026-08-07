@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+import httpx
 
 from growth_autopsy.domain import Appointment, AppointmentStatus
 from growth_autopsy.fathom import (
@@ -128,3 +129,67 @@ async def test_fathom_ingestion_matches_calendar_and_starts_analysis(tmp_path) -
     assert duplicate.status == "duplicate"
     assert len(hermes.calls) == 1
 
+
+@pytest.mark.asyncio
+async def test_fathom_fetches_transcript_when_webhook_omits_it(tmp_path) -> None:
+    store = WorkflowStore(tmp_path / "state.db")
+    store.initialize()
+    store.upsert_appointment(
+        Appointment(
+            calendar_event_id="event-fallback",
+            calendar_id="primary",
+            etag="etag-1",
+            title="[GROWTH AUTOPSY] Acme",
+            company="Acme",
+            website="https://acme.example",
+            founder_name="Alice",
+            founder_email="alice@acme.example",
+            founder_linkedin="",
+            industry="",
+            strategy_mode="case_study_only",
+            start_at=datetime(2026, 8, 20, 9, 30, tzinfo=UTC),
+            end_at=datetime(2026, 8, 20, 10, 30, tzinfo=UTC),
+            status=AppointmentStatus.BOOKED,
+            source_payload={},
+        )
+    )
+    payload = {
+        "recording_id": 778,
+        "meeting_title": "[GROWTH AUTOPSY] Acme",
+        "scheduled_start_time": "2026-08-20T09:30:00Z",
+        "calendar_invitees": [
+            {"email": "alice@acme.example", "is_external": True}
+        ],
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    now = datetime.now(UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/external/v1/recordings/778/transcript"
+        assert request.headers["x-api-key"] == "fathom-key"
+        return httpx.Response(
+            200,
+            json={
+                "transcript": [
+                    {
+                        "speaker": {"display_name": "Alice"},
+                        "timestamp": "00:00:05",
+                        "text": "We need a retention plan.",
+                    }
+                ]
+            },
+        )
+
+    service = FathomIngestionService(
+        store,
+        FakeHermes(),  # type: ignore[arg-type]
+        webhook_secret=WEBHOOK_SECRET,
+        transcript_dir=tmp_path / "transcripts",
+        match_window_minutes=20,
+        api_key="fathom-key",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await service.ingest(body, signed_headers("msg-778", body, now))
+
+    assert result.status == "analysis_started"
+    assert "retention plan" in (tmp_path / "transcripts" / "778.md").read_text()

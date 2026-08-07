@@ -39,6 +39,35 @@ PRIORITY_PATH_TERMS = (
     "pricing", "product", "service", "solution", "case-stud", "customer", "testimonial",
     "about", "contact", "demo", "shop", "collection", "subscribe",
 )
+CHANNEL_DOMAINS: dict[str, tuple[str, ...]] = {
+    "instagram": ("instagram.com",),
+    "facebook": ("facebook.com", "fb.com"),
+    "linkedin": ("linkedin.com",),
+    "youtube": ("youtube.com", "youtu.be"),
+    "tiktok": ("tiktok.com",),
+    "pinterest": ("pinterest.com", "pin.it"),
+    "reddit": ("reddit.com",),
+    "x": ("x.com", "twitter.com"),
+    "amazon": ("amazon.com", "amazon.co.uk", "amazon.in"),
+    "podcasts": (
+        "podcasts.apple.com",
+        "open.spotify.com",
+        "podbean.com",
+        "buzzsprout.com",
+    ),
+    "marketplaces": ("etsy.com", "ebay.com", "walmart.com"),
+}
+SEARCH_PROVIDER_DOMAINS = {
+    "duckduckgo.com",
+    "google.com",
+    "bing.com",
+    "yahoo.com",
+}
+OFFICIAL_AD_RESEARCH_TOOLS = {
+    "meta_ad_library": "https://www.facebook.com/ads/library/",
+    "google_ads_transparency": "https://adstransparency.google.com/",
+    "tiktok_creative_center": "https://ads.tiktok.com/business/creativecenter/inspiration/topads/pc/en",
+}
 
 
 class ResearchError(RuntimeError):
@@ -230,6 +259,11 @@ def _technologies(html: str, headers: dict[str, str]) -> list[str]:
         "Google Tag Manager": ("googletagmanager.com/gtm.js", "gtm-"),
         "Google Analytics": ("google-analytics.com", "gtag("),
         "Meta Pixel": ("connect.facebook.net", "fbq("),
+        "Google Ads tag": ("googleadservices.com", "aw-"),
+        "TikTok Pixel": ("analytics.tiktok.com", "ttq."),
+        "Microsoft Clarity": ("clarity.ms/tag",),
+        "Hotjar": ("static.hotjar.com", "hj("),
+        "Mailchimp": ("chimpstatic.com", "list-manage.com"),
         "Stripe": ("js.stripe.com",),
         "WooCommerce": ("woocommerce", "wc-ajax"),
         "Squarespace": ("static1.squarespace.com",),
@@ -305,6 +339,14 @@ def parse_html(result: FetchResult) -> tuple[dict[str, Any], list[str]]:
         "visible_text_excerpt": excerpt,
         "word_count_approx": len(excerpt.split()),
         "technologies_observed": _technologies(result.text, result.headers),
+        "external_links": _unique(
+            (
+                link
+                for link in links
+                if not _same_site(link, urlsplit(result.final_url).hostname or "")
+            ),
+            50,
+        ),
     }
     return page, links
 
@@ -368,22 +410,48 @@ async def collect_search(
     host = urlsplit(normalize_website_url(appointment.website)).hostname or ""
     company = appointment.company.replace('"', "")
     founder = appointment.founder_name.replace('"', "")
-    queries = [
-        f'"{company}" reviews competitors',
-        f"site:{host} pricing products services",
-        f'"{company}" LinkedIn Instagram YouTube',
-        f'"{founder}" "{company}" founder' if founder else f'"{company}" alternatives',
+    query_specs = [
+        ("reputation", f'"{company}" reviews'),
+        ("site_commercial", f"site:{host} pricing products services case studies"),
+        (
+            "founder_authority",
+            f'"{founder}" "{company}" founder' if founder else f'"{company}" founder',
+        ),
+        ("competitors", f'"{company}" competitors alternatives'),
+        (
+            "social_footprint",
+            f'"{company}" LinkedIn Instagram Facebook YouTube TikTok Pinterest Reddit',
+        ),
+        ("meta_ad_library", f'site:facebook.com/ads/library "{company}"'),
+        ("google_ads_transparency", f'site:adstransparency.google.com "{company}"'),
+        ("tiktok_presence", f'site:tiktok.com "{company}"'),
     ]
-    records = []
-    for query in queries:
+
+    async def run(topic: str, query: str) -> dict[str, Any]:
         try:
             results = await search(query, limit) if search else await duckduckgo_search(query, limit, timeout)
-            records.append({"query": query, "status": "available", "results": results})
+            return {
+                "topic": topic,
+                "query": query,
+                "status": "available",
+                "results": results,
+            }
         except Exception as exc:
-            records.append({"query": query, "status": "unavailable", "error": str(exc)[:500], "results": []})
+            return {
+                "topic": topic,
+                "query": query,
+                "status": "unavailable",
+                "error": str(exc)[:500],
+                "results": [],
+            }
+
+    records = await asyncio.gather(*(run(topic, query) for topic, query in query_specs))
     return {
         "provider": "DuckDuckGo via ddgs (free public search)",
-        "limitations": "Discovery snippets are not Search Console data or a complete web index.",
+        "limitations": (
+            "Discovery snippets are not Search Console data, a complete web index, or proof "
+            "that an ad is currently active."
+        ),
         "queries": records,
     }
 
@@ -553,6 +621,156 @@ def derive_seo(pages: list[dict[str, Any]], search: dict[str, Any]) -> dict[str,
     }
 
 
+def _host_matches(host: str, domains: Iterable[str]) -> bool:
+    normalized = host.removeprefix("www.").casefold()
+    return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
+
+
+def _search_results(search: dict[str, Any], topic: str) -> list[dict[str, Any]]:
+    return [
+        item
+        for query in search.get("queries", [])
+        if query.get("topic") == topic
+        for item in query.get("results", [])
+        if isinstance(item, dict)
+    ]
+
+
+def derive_channels(
+    pages: list[dict[str, Any]], search: dict[str, Any]
+) -> dict[str, Any]:
+    website_links = _unique(
+        link for page in pages for link in page.get("external_links", [])
+    )
+    discovery_results = _search_results(search, "social_footprint") + _search_results(
+        search, "tiktok_presence"
+    )
+    channels: dict[str, Any] = {}
+    for channel, domains in CHANNEL_DOMAINS.items():
+        confirmed = [
+            link
+            for link in website_links
+            if _host_matches(urlsplit(link).hostname or "", domains)
+        ]
+        candidates = _unique(
+            str(item.get("url") or "")
+            for item in discovery_results
+            if _host_matches(urlsplit(str(item.get("url") or "")).hostname or "", domains)
+        )
+        status = "observed_from_company_website" if confirmed else (
+            "search_candidate_needs_verification"
+            if candidates
+            else "not_observed_in_bounded_check"
+        )
+        channels[channel] = {
+            "status": status,
+            "company_linked_profiles": confirmed,
+            "search_candidates": candidates,
+        }
+
+    page_text = " ".join(
+        str(page.get("visible_text_excerpt") or "") for page in pages
+    ).casefold()
+    forms = [form for page in pages for form in page.get("forms", [])]
+    email_signals = _unique(
+        term
+        for term in ("newsletter", "subscribe", "email updates", "join our list")
+        if term in page_text
+    )
+    channels["email_newsletter"] = {
+        "status": (
+            "observed_on_website"
+            if email_signals or any(form.get("has_email_field") for form in forms)
+            else "not_observed_in_bounded_check"
+        ),
+        "signals": email_signals,
+        "email_form_observed": any(form.get("has_email_field") for form in forms),
+    }
+    for channel, terms in {
+        "affiliates": ("affiliate", "referral program"),
+        "influencer_marketing": ("ambassador", "creator program", "influencer"),
+    }.items():
+        signals = [term for term in terms if term in page_text]
+        channels[channel] = {
+            "status": "language_observed_on_website" if signals else "not_observed_in_bounded_check",
+            "signals": signals,
+        }
+    return {
+        "channels": channels,
+        "important_caveat": (
+            "A linked profile or search result proves discoverable public presence, not current "
+            "posting frequency, paid activity, performance, or channel ownership. 'Not observed' "
+            "does not mean inactive."
+        ),
+    }
+
+
+def derive_ad_research(
+    pages: list[dict[str, Any]], search: dict[str, Any]
+) -> dict[str, Any]:
+    technologies = _unique(
+        technology
+        for page in pages
+        for technology in page.get("technologies_observed", [])
+        if technology in {"Meta Pixel", "Google Ads tag", "TikTok Pixel"}
+    )
+    return {
+        "tracking_technology_observed": technologies,
+        "meta": {
+            "status": "official_library_verification_required",
+            "discovery_candidates": _search_results(search, "meta_ad_library"),
+            "official_tool": OFFICIAL_AD_RESEARCH_TOOLS["meta_ad_library"],
+        },
+        "google": {
+            "status": "official_transparency_verification_required",
+            "discovery_candidates": _search_results(search, "google_ads_transparency"),
+            "official_tool": OFFICIAL_AD_RESEARCH_TOOLS["google_ads_transparency"],
+        },
+        "tiktok": {
+            "status": "public_presence_only",
+            "discovery_candidates": _search_results(search, "tiktok_presence"),
+            "official_tool": OFFICIAL_AD_RESEARCH_TOOLS["tiktok_creative_center"],
+        },
+        "hard_boundary": (
+            "Detected pixels do not prove active campaigns or retargeting. Public evidence cannot "
+            "supply spend, ROAS, CPA, CTR, CPC, conversion rate, campaign structure, or creative "
+            "fatigue; those require official-library evidence or account access."
+        ),
+    }
+
+
+def derive_competitor_candidates(
+    search: dict[str, Any], company_website: str
+) -> dict[str, Any]:
+    company_host = (urlsplit(company_website).hostname or "").removeprefix("www.").casefold()
+    excluded = tuple(SEARCH_PROVIDER_DOMAINS) + tuple(
+        domain for values in CHANNEL_DOMAINS.values() for domain in values
+    )
+    candidates = []
+    seen: set[str] = set()
+    for item in _search_results(search, "competitors"):
+        url = str(item.get("url") or "")
+        host = (urlsplit(url).hostname or "").removeprefix("www.").casefold()
+        if not host or host == company_host or host.endswith(f".{company_host}"):
+            continue
+        if _host_matches(host, excluded) or host in seen:
+            continue
+        seen.add(host)
+        candidates.append(
+            {
+                "host": host,
+                "title": str(item.get("title") or ""),
+                "url": url,
+                "snippet": str(item.get("snippet") or ""),
+                "classification": "search_candidate_needs_validation",
+            }
+        )
+    return {
+        "candidates": candidates[:10],
+        "caveat": "Search co-occurrence does not prove that a company is a direct competitor.",
+    }
+
+
 class FreePrecallResearcher:
     def __init__(
         self,
@@ -589,6 +807,40 @@ class FreePrecallResearcher:
             raise ResearchError(f"Company homepage returned HTTP {homepage_fetch.status_code}")
         homepage, links = parse_html(homepage_fetch)
         final_root = homepage_fetch.final_url
+        browser_render: dict[str, Any] = {
+            "status": "disabled",
+            "provider": "Playwright Chromium",
+        }
+        if self.settings.playwright_enabled and self.transport is None:
+            try:
+                # Imported lazily to keep the deterministic HTTP collector usable
+                # in minimal/test environments and avoid a module import cycle.
+                from .browser import PlaywrightRenderer
+
+                rendered = await PlaywrightRenderer(
+                    timeout_seconds=self.settings.playwright_timeout_seconds,
+                    settle_milliseconds=self.settings.playwright_settle_milliseconds,
+                    max_response_bytes=self.settings.precall_max_response_bytes,
+                ).render(final_root)
+                if rendered.fetch.status_code < 400:
+                    homepage, links = parse_html(rendered.fetch)
+                    final_root = rendered.fetch.final_url
+                    browser_render = {
+                        "status": "available",
+                        "provider": "Playwright Chromium",
+                        "final_url": final_root,
+                        "elapsed_ms": rendered.fetch.elapsed_ms,
+                        "blocked_requests": rendered.blocked_requests,
+                    }
+            except Exception as exc:
+                browser_render = {
+                    "status": "unavailable",
+                    "provider": "Playwright Chromium",
+                    "error": str(exc)[:500],
+                }
+                warnings.append(f"Playwright rendering unavailable; HTTP HTML was used: {exc}")
+        elif self.transport is not None:
+            browser_render["reason"] = "disabled_for_injected_transport"
 
         robots_url = urljoin(final_root, "/robots.txt")
         sitemap_url = urljoin(final_root, "/sitemap.xml")
@@ -634,16 +886,20 @@ class FreePrecallResearcher:
         except Exception as exc:
             sitemap = {"url": sitemap_url, "status": "unavailable", "error": str(exc)[:500]}
 
-        search = (
-            await collect_search(
-                appointment, self.settings.precall_search_results_per_query,
-                self.settings.precall_search_timeout_seconds, self.search,
+        async def get_search() -> dict[str, Any]:
+            if not self.settings.precall_search_enabled:
+                return {"provider": "disabled", "queries": [], "status": "disabled"}
+            return await collect_search(
+                appointment,
+                self.settings.precall_search_results_per_query,
+                self.settings.precall_search_timeout_seconds,
+                self.search,
             )
-            if self.settings.precall_search_enabled
-            else {"provider": "disabled", "queries": [], "status": "disabled"}
-        )
-        pagespeed = (
-            await collect_pagespeed(
+
+        async def get_pagespeed() -> dict[str, Any]:
+            if not self.settings.precall_pagespeed_enabled:
+                return {"provider": "disabled", "status": "disabled"}
+            return await collect_pagespeed(
                 final_root,
                 api_key=self.settings.pagespeed_api_key,
                 timeout=self.settings.precall_pagespeed_timeout_seconds,
@@ -652,19 +908,56 @@ class FreePrecallResearcher:
                 local_timeout=self.settings.precall_local_lighthouse_timeout_seconds,
                 transport=self.transport,
             )
-            if self.settings.precall_pagespeed_enabled
-            else {"provider": "disabled", "status": "disabled"}
+
+        async def get_semrush() -> dict[str, Any]:
+            from .semrush_mcp import SemrushMCPClient
+
+            return await SemrushMCPClient(self.settings).collect(appointment.website)
+
+        search, pagespeed, semrush = await asyncio.gather(
+            get_search(), get_pagespeed(), get_semrush()
+        )
+        traffic_reports = [
+            item
+            for item in semrush.get("reports", [])
+            if item.get("category") == "traffic_overview"
+            and item.get("status") == "available"
+        ]
+        traffic = (
+            {
+                "status": "licensed_estimate_available",
+                "provider": "Semrush MCP / Trends API",
+                "reports": traffic_reports,
+                "traffic_trend": None,
+                "channel_distribution": None,
+                "top_countries": None,
+                "caveat": (
+                    "Third-party estimate only. Availability depends on the Semrush subscription; "
+                    "never treat it as the founder's analytics."
+                ),
+            }
+            if traffic_reports
+            else {
+                "status": "unavailable_from_free_public_collectors",
+                "estimated_monthly_visits": None,
+                "traffic_trend": None,
+                "channel_distribution": None,
+                "top_countries": None,
+                "engagement": None,
+                "caveat": "Do not invent Similarweb- or Semrush-style traffic metrics.",
+            }
         )
         unavailable = [
             "Actual sessions, conversion rate, revenue and funnel drop-off require analytics access.",
             "ROAS, CPA, CPC, CTR, spend and campaign structure require ad-account access.",
+            "Active-ad counts, creative history and offer comparisons require verified results from the official Meta/Google/TikTok transparency tools.",
             "Branded versus non-branded clicks require Google Search Console or a licensed dataset.",
             "Complete keyword rankings and backlink totals require Search Console or an SEO dataset.",
             "Monthly visits, channel percentages, geography and engagement require analytics or licensed traffic data.",
         ]
         return {
-            "schema_version": "1.0",
-            "collector": "growth-autopsy local-free evidence pipeline",
+            "schema_version": "1.3",
+            "collector": "growth-autopsy Playwright + public evidence pipeline",
             "collected_at": datetime.now(UTC).isoformat(),
             "evidence_policy": {
                 "public_sources_only": True,
@@ -675,23 +968,35 @@ class FreePrecallResearcher:
                 "calendar_event_id": appointment.calendar_event_id,
                 "company": appointment.company, "website": appointment.website,
                 "founder_name": appointment.founder_name,
+                "founder_email": appointment.founder_email,
                 "founder_linkedin": appointment.founder_linkedin,
-                "industry": appointment.industry, "call_time": appointment.start_at.isoformat(),
+                "industry": appointment.industry,
+                "meeting_agenda": appointment.meeting_agenda,
+                "call_time": appointment.start_at.isoformat(),
+                "calendar_ical_uid": str(appointment.source_payload.get("iCalUID") or ""),
+                "conference_url": str(appointment.source_payload.get("hangoutLink") or ""),
             },
             "website": {
                 "requested_url": appointment.website, "final_url": final_root,
                 "homepage": homepage, "site_summary": derive_summary(pages, final_root),
                 "pages": pages, "crawl_errors": errors, "robots_txt": robots, "sitemap": sitemap,
+                "browser_render": browser_render,
             },
             "pagespeed": pagespeed,
             "public_search": search,
-            "seo": derive_seo(pages, search),
-            "traffic": {
-                "status": "unavailable_from_free_public_collectors",
-                "estimated_monthly_visits": None, "traffic_trend": None,
-                "channel_distribution": None, "top_countries": None, "engagement": None,
-                "caveat": "Do not invent Similarweb-style traffic metrics.",
+            "seo": {
+                **derive_seo(pages, search),
+                "licensed_semrush": [
+                    item
+                    for item in semrush.get("reports", [])
+                    if item.get("category") in {"domain_overview", "organic_research"}
+                ],
             },
+            "semrush": semrush,
+            "channels": derive_channels(pages, search),
+            "ads": derive_ad_research(pages, search),
+            "competitors": derive_competitor_candidates(search, final_root),
+            "traffic": traffic,
             "unavailable_or_private_data": unavailable,
             "warnings": warnings,
         }
@@ -728,6 +1033,62 @@ def render_evidence_markdown(evidence: dict[str, Any]) -> str:
         lines.append(
             f"- {strategy.title()}: "
             + (json.dumps(result.get("scores")) if result.get("status") == "available" else f"Unavailable — {result.get('error', 'not returned')}")
+        )
+    browser = website.get("browser_render", {})
+    lines.extend(
+        [
+            "",
+            "## Browser rendering",
+            "",
+            f"- Playwright: {browser.get('status', 'unknown')}",
+            f"- Final rendered URL: {browser.get('final_url', 'Unavailable')}",
+        ]
+    )
+    semrush = evidence.get("semrush", {})
+    lines.extend(["", "## Licensed Semrush enrichment", ""])
+    lines.append(f"- Status: {semrush.get('status', 'not_configured')}")
+    if semrush.get("caveat"):
+        lines.append(f"- Caveat: {semrush['caveat']}")
+    traffic = evidence.get("traffic", {})
+    lines.extend(["", "## Traffic evidence", ""])
+    lines.append(f"- Status: {traffic.get('status', 'unavailable')}")
+    if traffic.get("reports"):
+        lines.append(
+            "- Semrush reports: "
+            + json.dumps(traffic["reports"], ensure_ascii=False)
+        )
+    if traffic.get("caveat"):
+        lines.append(f"- Caveat: {traffic['caveat']}")
+    lines.extend(["", "## Channel footprint", ""])
+    channels = evidence.get("channels", {}).get("channels", {})
+    if not channels:
+        lines.append("- Channel evidence was not collected.")
+    for name, channel in channels.items():
+        links = channel.get("company_linked_profiles") or channel.get("search_candidates") or []
+        signals = channel.get("signals") or []
+        detail = ", ".join(str(item) for item in [*links, *signals]) or "no bounded evidence"
+        lines.append(f"- {name.replace('_', ' ').title()}: {channel.get('status', 'unknown')} — {detail}")
+    lines.extend(["", "## Advertising transparency checks", ""])
+    ads = evidence.get("ads", {})
+    tracking = ads.get("tracking_technology_observed") or []
+    lines.append(f"- Tracking technology observed: {', '.join(tracking) or 'None detected'}")
+    for platform in ("meta", "google", "tiktok"):
+        item = ads.get(platform, {})
+        if not item:
+            continue
+        lines.append(
+            f"- {platform.title()}: {item.get('status', 'unknown')} — {item.get('official_tool', '')}"
+        )
+    if ads.get("hard_boundary"):
+        lines.append(f"- Boundary: {ads['hard_boundary']}")
+    lines.extend(["", "## Competitor discovery candidates", ""])
+    competitors = evidence.get("competitors", {}).get("candidates", [])
+    if not competitors:
+        lines.append("- No candidates were returned by the bounded search.")
+    for item in competitors:
+        lines.append(
+            f"- [{item.get('title') or item.get('host')}]({item.get('url')}) — "
+            f"{item.get('classification')}"
         )
     lines.extend(["", "## Public search evidence", ""])
     for query in evidence.get("public_search", {}).get("queries", []):

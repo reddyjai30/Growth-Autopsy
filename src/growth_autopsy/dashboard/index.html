@@ -4,78 +4,100 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>Growth Autopsy — Founder Intelligence Desk</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet" />
+    <meta name="theme-color" content="#102c22" />
+    <title>Growth Autopsy — Marketing Pipeline</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark"><i></i><i></i><i></i></span>
-        <span><strong>Growth Autopsy</strong><small>Founder intelligence desk</small></span>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Growth Autopsy home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Growth Autopsy</strong><small>Marketing automation</small></span>
+      </a>
+      <div class="header-actions">
+        <label class="search" for="globalSearch">
+          <span aria-hidden="true">⌕</span>
+          <input id="globalSearch" type="search" placeholder="Search meetings…" autocomplete="off" />
+        </label>
+        <span id="systemState" class="system-state"><i></i><span>Checking</span></span>
+        <button id="syncButton" class="button secondary" type="button"><span>↻</span> Sync</button>
       </div>
-      <nav>
-        <button class="nav-item active" data-view="overview"><span>⌂</span> Overview</button>
-        <button class="nav-item" data-view="calls"><span>▣</span> Today’s calls <b id="navCalls">0</b></button>
-        <button class="nav-item" data-view="approvals"><span>✓</span> Approvals <b id="navApprovals">0</b></button>
-        <button class="nav-item" data-view="all"><span>≡</span> All workflows</button>
-      </nav>
-      <div class="workspace">
-        <strong>Marketing Mosaics</strong>
-        <span>POC · Local control plane</span>
-        <button id="keyButton">Set access key</button>
-      </div>
-    </aside>
+    </header>
 
-    <main>
-      <header class="topbar">
-        <div><span class="eyebrow" id="todayLabel"></span></div>
-        <div class="top-actions">
-          <span id="systemState" class="system-pill">Checking automation…</span>
-          <button id="syncButton" class="secondary">Sync calendar</button>
-        </div>
-      </header>
-
+    <main class="page">
       <section class="hero">
-        <h1>See every conversation<br />become an asset.</h1>
-        <p>Calendar starts the research. Fathom continues the workflow. You stay in control.</p>
+        <div>
+          <span class="eyebrow">Founder workflow</span>
+          <h1>Growth Autopsy pipeline</h1>
+          <p>See every meeting move from booking to research, content, approval and Notion.</p>
+        </div>
+        <div id="summary" class="summary" aria-label="Pipeline summary"></div>
       </section>
 
-      <section id="notice" class="notice hidden"></section>
-
-      <section class="controller-card">
-        <span class="pulse"></span>
-        <div><strong>Automation controller</strong><small id="controllerDetail">Loading workflow state…</small></div>
-        <span class="collector-pill">Free evidence stack</span>
+      <section id="notice" class="notice hidden" role="status" aria-live="polite"></section>
+      <section class="pipeline-toolbar" aria-label="Pipeline controls">
+        <div class="filter-group">
+          <label for="statusFilter">Show</label>
+          <select id="statusFilter">
+            <option value="all">All meetings</option>
+            <option value="active">In progress</option>
+            <option value="approval">Awaiting approval</option>
+            <option value="attention">Needs attention</option>
+            <option value="complete">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <span id="boardHint" class="board-hint">9-stage workflow · scroll horizontally →</span>
+        <div class="layout-toggle" aria-label="Choose pipeline layout">
+          <button id="boardLayout" class="active" type="button" data-layout="board"><span>▦</span> Board</button>
+          <button id="tableLayout" type="button" data-layout="table"><span>☷</span> Table</button>
+        </div>
       </section>
-
-      <section class="metrics">
-        <article class="metric primary"><small>Calls tracked</small><strong id="metricCalls">0</strong><span>Calendar-matched founder calls</span></article>
-        <article class="metric"><small>Active workflows</small><strong id="metricActive">0</strong><span>Across research and analysis</span></article>
-        <article class="metric"><small>Needs attention</small><strong id="metricAttention">0</strong><span>Input, review, or retry required</span></article>
-      </section>
-
-      <section class="pipeline-section">
-        <div class="section-heading"><span class="eyebrow">Live pipeline</span><h2>Founder workflows</h2></div>
-        <div id="workflowList" class="workflow-list"><div class="empty">Loading workflows…</div></div>
+      <section id="viewRoot" class="meeting-list" aria-live="polite">
+        <div class="page-loader"><i></i><span>Loading meetings…</span></div>
       </section>
     </main>
 
+    <footer class="footer">
+      <span>Marketing Mosaics · Growth Autopsy</span>
+    </footer>
+
     <div id="scrim" class="scrim hidden"></div>
-    <aside id="drawer" class="drawer" aria-hidden="true">
-      <button id="closeDrawer" class="close" aria-label="Close">×</button>
-      <div id="drawerContent"></div>
+    <aside id="drawer" class="drawer" aria-hidden="true" aria-label="Meeting workflow details">
+      <header class="drawer-topbar">
+        <span>Meeting details</span>
+        <div class="drawer-topbar-actions">
+          <button id="deleteMeetingButton" class="delete-meeting-button" type="button" aria-label="Delete meeting" title="Delete meeting">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/></svg>
+          </button>
+          <button id="closeDrawer" type="button" aria-label="Close details">×</button>
+        </div>
+      </header>
+      <div id="drawerContent"><div class="page-loader"><i></i><span>Loading workflow…</span></div></div>
     </aside>
 
-    <dialog id="keyDialog">
-      <form method="dialog">
-        <span class="eyebrow">Local access</span>
-        <h3>Dashboard key</h3>
-        <p>Leave blank when <code>GA_INTERNAL_API_KEY</code> is blank.</p>
-        <input id="keyInput" type="password" autocomplete="off" placeholder="Internal API key" />
-        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="saveKey" value="default">Save</button></div>
+    <dialog id="deleteDialog" class="modal">
+      <form id="deleteForm">
+        <span class="eyebrow danger-text">Remove workflow</span>
+        <h2>Delete this meeting?</h2>
+        <p class="delete-warning"><strong id="deleteMeetingName"></strong>This removes the meeting and its workflow records from this dashboard. The Google Calendar event itself will not be deleted.</p>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close-modal="deleteDialog">Keep meeting</button>
+          <button id="deleteSubmit" type="submit" class="button danger">Delete meeting</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="revisionDialog" class="modal">
+      <form id="revisionForm">
+        <span class="eyebrow">Revision</span>
+        <h2>Request changes</h2>
+        <p>Describe exactly what should change in the document.</p>
+        <label>Revision notes<textarea id="revisionNotes" rows="6" maxlength="4000" required></textarea></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close-modal="revisionDialog">Cancel</button>
+          <button type="submit" class="button">Start revision</button>
+        </div>
       </form>
     </dialog>
 

@@ -1,7 +1,10 @@
 .env
+secrets/
+*.pem
 .venv/
 .venv-*/
 node_modules/
+data/exports/
 __pycache__/
 .pytest_cache/
 *.py[cod]

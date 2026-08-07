@@ -1,5 +1,5 @@
 {
-  "name": "growth-autopsy-poc-runtime",
+  "name": "growth-autopsy-runtime",
   "private": true,
   "description": "Pinned local Lighthouse runtime for the free pre-call research fallback",
   "dependencies": {

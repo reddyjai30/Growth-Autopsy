@@ -29,3 +29,11 @@ Sensitivity: internal | potentially-public | founder-approval-required
 
 Never include a verbatim excerpt longer than needed to prove the point.
 
+The final line is required for safe orchestration:
+
+```text
+<!-- strategy_intent: strategy_requested -->
+```
+
+Use `case_study_only` or `unsure` instead when appropriate. Put no content after
+the marker.
