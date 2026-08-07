@@ -74,3 +74,5 @@ async def test_start_precall_run_sends_evidence_only() -> None:
     assert captured[0].url.path == "/v1/runs"
     assert "Do not browse" in payload["instructions"]
     assert "https://acme.example" in payload["input"]
+    assert "model" not in payload
+    assert "provider" not in payload

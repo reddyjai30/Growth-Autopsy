@@ -15,7 +15,9 @@ class AppointmentStatus(StrEnum):
     CALL_COMPLETED = "CALL_COMPLETED"
     TRANSCRIPT_READY = "TRANSCRIPT_READY"
     ANALYSIS_RUNNING = "ANALYSIS_RUNNING"
+    INTELLIGENCE_READY = "INTELLIGENCE_READY"
     CONTENT_DRAFTED = "CONTENT_DRAFTED"
+    PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
 
 
@@ -58,6 +60,7 @@ class Appointment:
     end_at: datetime
     status: AppointmentStatus
     source_payload: dict[str, Any]
+    meeting_agenda: str = ""
     research_job_id: str | None = None
     research_start_at: datetime | None = None
     last_error: str | None = None

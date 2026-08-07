@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from growth_autopsy.config import Settings
-from growth_autopsy.controller import collect_agent_outputs, run_due_precall_research
+from growth_autopsy.controller import run_due_precall_research
 from growth_autopsy.domain import Artifact, ArtifactStatus, Appointment, AppointmentStatus
 from growth_autopsy.store import WorkflowStore
 
@@ -30,18 +30,29 @@ class FakeResearcher:
             },
             "pagespeed": {"mobile": {"status": "unavailable", "error": "test"}, "desktop": {"status": "unavailable", "error": "test"}},
             "public_search": {"queries": []},
+            "semrush": {
+                "status": "available",
+                "provider": "Semrush official MCP",
+                "reports": [
+                    {
+                        "category": "domain_overview",
+                        "status": "available",
+                        "report": "domain_overview_test",
+                        "result": {"data": {"organic_keywords": 321}},
+                    }
+                ],
+            },
             "unavailable_or_private_data": ["Private analytics required"],
         }
 
 
-class FakeHermes:
-    async def start_precall_run(self, appointment, evidence):
+class FakeAI:
+    async def synthesize_precall(self, appointment, evidence):
         assert evidence["website"]["final_url"] == appointment.website
-        return "run-1"
-
-    async def get_run(self, run_id):
-        assert run_id == "run-1"
-        return {"status": "completed", "output": "# Acme pre-call brief\n\nExactly sourced."}
+        assert evidence["semrush"]["reports"][0]["result"] == {
+            "data": {"organic_keywords": 321}
+        }
+        return "# Acme pre-call brief\n\nExactly sourced."
 
 
 @pytest.mark.asyncio
@@ -78,13 +89,11 @@ async def test_precall_pipeline_persists_evidence_and_report(tmp_path) -> None:
     store.upsert_artifact(Artifact(None, "event-1", "precall_research", "Research", ArtifactStatus.SCHEDULED))
 
     result = await run_due_precall_research(
-        settings, store, FakeHermes(), now=now, researcher=FakeResearcher()  # type: ignore[arg-type]
+        settings, store, FakeAI(), now=now, researcher=FakeResearcher()  # type: ignore[arg-type]
     )
-    assert result[0]["status"] == "synthesis_started"
+    assert result[0]["status"] == "ready"
     assert store.get_artifact_by_kind("event-1", "precall_evidence").status == ArtifactStatus.READY  # type: ignore[union-attr]
 
-    collected = await collect_agent_outputs(settings, store, FakeHermes())  # type: ignore[arg-type]
-    assert collected[0]["status"] == "ready"
     report = store.get_artifact_by_kind("event-1", "precall_research")
     assert report is not None and report.status == ArtifactStatus.READY
     assert report.file_path.endswith("precall-research.md")

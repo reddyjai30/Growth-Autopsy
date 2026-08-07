@@ -7,6 +7,7 @@ import pytest
 
 from growth_autopsy.calendar_ingestion import (
     CalendarIngestionService,
+    calendar_conference_url,
     parse_calendar_event,
 )
 from growth_autopsy.domain import AppointmentStatus
@@ -22,11 +23,13 @@ def calendar_event() -> dict:
         "description": "\n".join(
             [
                 "Automation: GROWTH_AUTOPSY",
-                "Company: Acme",
-                "Website: https://acme.example",
+                "Company Name: Acme",
+                "Company Website: https://acme.example",
+                "Founder Email: alice@acme.example",
                 "Founder LinkedIn: https://linkedin.com/in/alice",
-                "Industry: Ecommerce",
-                "Strategy Mode: auto",
+                "Meeting Agenda:",
+                "- Review acquisition priorities",
+                "- Identify conversion opportunities",
             ]
         ),
         "start": {"dateTime": "2026-08-20T15:00:00+05:30"},
@@ -51,7 +54,21 @@ def test_parse_structured_calendar_event() -> None:
     assert appointment.website == "https://acme.example"
     assert appointment.founder_name == "Alice Founder"
     assert appointment.founder_email == "alice@acme.example"
+    assert appointment.founder_linkedin == "https://linkedin.com/in/alice"
+    assert appointment.meeting_agenda == (
+        "Review acquisition priorities\nIdentify conversion opportunities"
+    )
     assert appointment.status == AppointmentStatus.BOOKED
+
+
+def test_google_meet_link_is_extracted_from_calendar_event() -> None:
+    event = calendar_event()
+    event["conferenceData"] = {
+        "entryPoints": [
+            {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
+        ]
+    }
+    assert calendar_conference_url(event) == "https://meet.google.com/abc-defg-hij"
 
 
 def test_missing_website_requires_input() -> None:
@@ -153,3 +170,33 @@ async def test_sync_creates_updates_and_cancels_research_job(tmp_path) -> None:
     assert third.cancelled == 1
     assert hermes.deleted == ["job-1"]
     assert store.get_appointment("event-123").status == AppointmentStatus.CANCELLED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_deleted_dashboard_meeting_is_not_reimported_by_calendar_sync(tmp_path) -> None:
+    store = WorkflowStore(tmp_path / "state.db")
+    store.initialize()
+    gateway = FakeCalendar([calendar_event()])
+    hermes = FakeHermes()
+    service = CalendarIngestionService(
+        gateway,
+        store,
+        hermes,  # type: ignore[arg-type]
+        calendar_id="primary",
+        title_prefix="[GROWTH AUTOPSY]",
+        diksha_email="diksha@example.com",
+        precall_start_minutes=60,
+        precall_delivery_minutes=30,
+    )
+
+    first = await service.sync(now=datetime(2026, 8, 20, 7, 0, tzinfo=UTC))
+    assert first.scheduled == 1
+    assert store.delete_appointment("event-123") is True
+
+    gateway.events[0]["etag"] = "etag-after-delete"
+    second = await service.sync(now=datetime(2026, 8, 20, 7, 5, tzinfo=UTC))
+
+    assert second.ignored == 1
+    assert second.scheduled == 0
+    assert store.get_appointment("event-123") is None
+    assert len(hermes.created) == 1

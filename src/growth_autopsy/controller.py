@@ -3,14 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .calendar_ingestion import CalendarIngestionService, GoogleCalendarGateway
+from .ai import AIClient
+from .calendar_ingestion import (
+    CalendarIngestionService,
+    GoogleCalendarGateway,
+    calendar_conference_url,
+)
 from .config import Settings
 from .domain import Artifact, ArtifactStatus, Appointment, AppointmentStatus, RecordingStatus
 from .hermes import HermesClient
+from .notion import NotionClient
 from .research import FreePrecallResearcher, LocalPrecallScheduler, render_evidence_markdown
 from .store import WorkflowStore
 
@@ -113,7 +120,7 @@ def _persist_precall_evidence(
 async def _run_precall_research(
     settings: Settings,
     store: WorkflowStore,
-    hermes: HermesClient,
+    ai: AIClient,
     appointment: Appointment,
     artifact: Artifact,
     *,
@@ -134,17 +141,24 @@ async def _run_precall_research(
         collector = researcher or FreePrecallResearcher(settings)
         evidence = await collector.collect(appointment)
         _persist_precall_evidence(settings, store, appointment, evidence)
-        run_id = await hermes.start_precall_run(appointment, evidence)
+        report = await ai.synthesize_precall(appointment, evidence)
+        path = _artifact_directory(settings, appointment) / "precall-research.md"
+        _atomic_write_text(path, report.rstrip() + "\n")
         store.update_artifact(
             artifact.id,
-            status=ArtifactStatus.PROCESSING,
-            source_id=f"run:{run_id}",
-            notes="Evidence collected; Gemini synthesis is running in Hermes",
+            status=ArtifactStatus.READY,
+            source_id=f"ai:{settings.ai_model}",
+            file_path=str(path),
+            content=report,
+            notes="Direct AI synthesis completed from the saved evidence pack",
+        )
+        store.mark_appointment_status(
+            appointment.calendar_event_id, AppointmentStatus.RESEARCH_READY
         )
         return {
             "event_id": appointment.calendar_event_id,
-            "status": "synthesis_started",
-            "run_id": run_id,
+            "status": "ready",
+            "report_path": str(path),
         }
     except Exception as exc:
         message = str(exc)[:1000]
@@ -166,7 +180,7 @@ async def _run_precall_research(
 async def run_due_precall_research(
     settings: Settings,
     store: WorkflowStore,
-    hermes: HermesClient,
+    ai: AIClient,
     *,
     now: datetime | None = None,
     force_event_id: str | None = None,
@@ -235,7 +249,7 @@ async def run_due_precall_research(
     async def run(item: tuple[Appointment, Artifact]) -> dict[str, Any]:
         async with semaphore:
             return await _run_precall_research(
-                settings, store, hermes, item[0], item[1], researcher=researcher
+                settings, store, ai, item[0], item[1], researcher=researcher
             )
 
     return await asyncio.gather(*(run(item) for item in candidates))
@@ -332,14 +346,194 @@ async def _collect_postcall_run(
             )
         )
         store.mark_recording_status(recording_id, RecordingStatus.ANALYSIS_COMPLETE)
-        store.mark_appointment_status(event_id, AppointmentStatus.CONTENT_DRAFTED)
-        return {"recording_id": recording_id, "status": "ready"}
+        store.mark_appointment_status(event_id, AppointmentStatus.INTELLIGENCE_READY)
+        queued = await queue_postcall_deliverables(
+            store,
+            hermes,
+            appointment,
+            founder_intelligence_path=str(path),
+            founder_intelligence=output,
+        )
+        return {"recording_id": recording_id, "status": "ready", "queued": queued}
+    if run_status in {"completed", "complete", "succeeded", "success"}:
+        message = "Hermes marked Founder Intelligence complete without an output"
+        store.mark_recording_status(recording_id, RecordingStatus.FAILED, message)
+        store.mark_appointment_status(event_id, AppointmentStatus.FAILED, message)
+        return {"recording_id": recording_id, "status": "failed", "error": message}
     if run_status in {"failed", "error", "cancelled", "canceled"}:
         message = error or f"Hermes post-call run ended with status {run_status}"
         store.mark_recording_status(recording_id, RecordingStatus.FAILED, message)
         store.mark_appointment_status(event_id, AppointmentStatus.FAILED, message)
         return {"recording_id": recording_id, "status": "failed", "error": message}
     return {"recording_id": recording_id, "status": run_status or "running"}
+
+
+DELIVERABLES: dict[str, tuple[str, str]] = {
+    "growth_autopsy": ("growth-autopsy.md", "Growth Autopsy / case-study draft"),
+    "strategy_doc": ("90-day-strategy.md", "90-day marketing strategy"),
+    "pitch_deck_brief": ("pitch-deck-brief.md", "Gamma-ready pitch deck brief"),
+}
+
+
+def classify_strategy_intent(appointment: Appointment, founder_intelligence: str) -> str:
+    configured = appointment.strategy_mode.strip().casefold().replace("-", "_")
+    if configured in {"case_study_and_strategy", "strategy", "strategy_requested", "yes"}:
+        return "strategy_requested"
+    if configured in {"case_study_only", "no_strategy", "no"}:
+        return "case_study_only"
+    matches = re.findall(
+        r"strategy_intent\s*:\s*(strategy_requested|case_study_only|unsure)",
+        founder_intelligence,
+        flags=re.I,
+    )
+    return matches[-1].casefold() if matches else "unsure"
+
+
+async def _queue_deliverable(
+    store: WorkflowStore,
+    hermes: HermesClient,
+    appointment: Appointment,
+    kind: str,
+    founder_intelligence_path: str,
+    precall_report_path: str,
+) -> dict[str, Any]:
+    existing = store.get_artifact_by_kind(appointment.calendar_event_id, kind)
+    if existing and existing.status not in {ArtifactStatus.FAILED, ArtifactStatus.REVISION_REQUESTED}:
+        return {"kind": kind, "status": "already_queued"}
+    try:
+        run_id = await hermes.start_deliverable_run(
+            kind,
+            appointment,
+            founder_intelligence_path=founder_intelligence_path,
+            precall_report_path=precall_report_path,
+        )
+        _, title = DELIVERABLES[kind]
+        store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind=kind,
+                title=f"{appointment.company} {title}",
+                status=ArtifactStatus.PROCESSING,
+                source_id=f"run:{run_id}",
+                notes="Hermes draft generation is running",
+            )
+        )
+        return {"kind": kind, "status": "started", "run_id": run_id}
+    except Exception as exc:
+        _, title = DELIVERABLES[kind]
+        store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind=kind,
+                title=f"{appointment.company} {title}",
+                status=ArtifactStatus.FAILED,
+                notes=str(exc)[:1000],
+            )
+        )
+        return {"kind": kind, "status": "failed", "error": str(exc)[:1000]}
+
+
+async def queue_postcall_deliverables(
+    store: WorkflowStore,
+    hermes: HermesClient,
+    appointment: Appointment,
+    *,
+    founder_intelligence_path: str,
+    founder_intelligence: str,
+    intent_override: str | None = None,
+) -> list[dict[str, Any]]:
+    intent = intent_override or classify_strategy_intent(appointment, founder_intelligence)
+    if intent not in {"strategy_requested", "case_study_only", "unsure"}:
+        raise ValueError("Invalid strategy intent")
+    store.set_setting(f"strategy_intent:{appointment.calendar_event_id}", intent)
+    precall = store.get_artifact_by_kind(appointment.calendar_event_id, "precall_research")
+    precall_path = precall.file_path if precall else ""
+    kinds = ["growth_autopsy"]
+    if intent == "strategy_requested":
+        kinds.extend(["strategy_doc", "pitch_deck_brief"])
+    elif intent == "unsure":
+        store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind="strategy_decision",
+                title=f"{appointment.company} strategy decision",
+                status=ArtifactStatus.READY,
+                content=(
+                    "Strategy intent was ambiguous. Diksha must choose "
+                    "strategy_requested or case_study_only before strategy/deck generation."
+                ),
+                notes="Human routing decision required",
+            )
+        )
+    results = await asyncio.gather(
+        *(
+            _queue_deliverable(
+                store,
+                hermes,
+                appointment,
+                kind,
+                founder_intelligence_path,
+                precall_path,
+            )
+            for kind in kinds
+        )
+    )
+    _refresh_content_status(store, appointment.calendar_event_id)
+    return results
+
+
+def _refresh_content_status(store: WorkflowStore, event_id: str) -> None:
+    intent = store.get_setting(f"strategy_intent:{event_id}") or "unsure"
+    if intent == "unsure":
+        return
+    required = ["growth_autopsy"]
+    if intent == "strategy_requested":
+        required.extend(["strategy_doc", "pitch_deck_brief"])
+    artifacts = [store.get_artifact_by_kind(event_id, kind) for kind in required]
+    ready = {ArtifactStatus.READY, ArtifactStatus.APPROVED, ArtifactStatus.REVISION_REQUESTED}
+    if all(item is not None and item.status in ready for item in artifacts):
+        store.mark_appointment_status(event_id, AppointmentStatus.CONTENT_DRAFTED)
+
+
+async def _collect_deliverable_run(
+    settings: Settings,
+    store: WorkflowStore,
+    hermes: HermesClient,
+    artifact: Artifact,
+) -> dict[str, Any]:
+    run_id = artifact.source_id.removeprefix("run:")
+    payload = await hermes.get_run(run_id)
+    run_status, output, error = _run_state(payload)
+    completed = {"completed", "complete", "succeeded", "success"}
+    if run_status in completed:
+        if not output:
+            message = "Hermes marked the deliverable complete without an output"
+            store.update_artifact(artifact.id or 0, status=ArtifactStatus.FAILED, notes=message)
+            return {"artifact_id": artifact.id, "status": "failed", "error": message}
+        appointment = store.get_appointment(artifact.calendar_event_id)
+        if appointment is None:
+            raise RuntimeError("Appointment disappeared while collecting a deliverable")
+        filename, _ = DELIVERABLES[artifact.kind]
+        path = _artifact_directory(settings, appointment) / filename
+        _atomic_write_text(path, output.rstrip() + "\n")
+        store.update_artifact(
+            artifact.id or 0,
+            status=ArtifactStatus.READY,
+            file_path=str(path),
+            content=output,
+            notes="Hermes draft completed; waiting for Diksha approval",
+        )
+        _refresh_content_status(store, artifact.calendar_event_id)
+        return {"artifact_id": artifact.id, "status": "ready", "kind": artifact.kind}
+    if run_status in {"failed", "error", "cancelled", "canceled"}:
+        message = error or f"Hermes {artifact.kind} run ended with status {run_status}"
+        store.update_artifact(artifact.id or 0, status=ArtifactStatus.FAILED, notes=message)
+        store.mark_appointment_status(artifact.calendar_event_id, AppointmentStatus.FAILED, message)
+        return {"artifact_id": artifact.id, "status": "failed", "error": message}
+    return {"artifact_id": artifact.id, "status": run_status or "running"}
 
 
 async def collect_agent_outputs(
@@ -350,7 +544,12 @@ async def collect_agent_outputs(
         if not artifact.source_id.startswith("run:"):
             continue
         try:
-            results.append(await _collect_precall_run(settings, store, hermes, artifact))
+            if artifact.kind == "precall_research":
+                results.append(await _collect_precall_run(settings, store, hermes, artifact))
+            elif artifact.kind in DELIVERABLES:
+                results.append(
+                    await _collect_deliverable_run(settings, store, hermes, artifact)
+                )
         except Exception as exc:
             results.append(
                 {"artifact_id": artifact.id, "status": "poll_error", "error": str(exc)[:1000]}
@@ -380,10 +579,125 @@ async def collect_agent_outputs(
     return results
 
 
+async def resolve_strategy_decision(
+    store: WorkflowStore,
+    hermes: HermesClient,
+    event_id: str,
+    intent: str,
+) -> list[dict[str, Any]]:
+    if intent not in {"strategy_requested", "case_study_only"}:
+        raise ValueError("Strategy decision must be strategy_requested or case_study_only")
+    appointment = store.get_appointment(event_id)
+    intelligence = store.get_artifact_by_kind(event_id, "founder_intelligence")
+    if appointment is None or intelligence is None or not intelligence.file_path:
+        raise ValueError("Founder Intelligence is required before routing deliverables")
+    decision = store.get_artifact_by_kind(event_id, "strategy_decision")
+    if decision and decision.id:
+        store.update_artifact(
+            decision.id,
+            status=ArtifactStatus.APPROVED,
+            notes=f"Diksha selected {intent}",
+        )
+    return await queue_postcall_deliverables(
+        store,
+        hermes,
+        appointment,
+        founder_intelligence_path=intelligence.file_path,
+        founder_intelligence=intelligence.content,
+        intent_override=intent,
+    )
+
+
+async def publish_approved_package(
+    settings: Settings,
+    store: WorkflowStore,
+    event_id: str,
+    *,
+    notion: NotionClient | None = None,
+) -> dict[str, Any]:
+    appointment = store.get_appointment(event_id)
+    if appointment is None:
+        raise ValueError("Appointment not found")
+    client = notion or NotionClient(
+        settings.notion_api_key,
+        settings.notion_parent_page_id,
+        api_version=settings.notion_api_version,
+    )
+    if not client.configured:
+        return {"status": "not_configured"}
+    existing = store.get_artifact_by_kind(event_id, "notion_package")
+    if existing and existing.source_id and not existing.source_id.startswith("publish:"):
+        return {
+            "status": "already_published",
+            "page_id": existing.source_id,
+            "url": existing.content,
+        }
+    intent = store.get_setting(f"strategy_intent:{event_id}") or "unsure"
+    if intent == "unsure":
+        return {"status": "waiting_for_strategy_decision"}
+    required = ["growth_autopsy"]
+    if intent == "strategy_requested":
+        required.extend(["strategy_doc", "pitch_deck_brief"])
+    artifacts = [store.get_artifact_by_kind(event_id, kind) for kind in required]
+    waiting = [
+        kind
+        for kind, item in zip(required, artifacts, strict=True)
+        if item is None or item.status != ArtifactStatus.APPROVED
+    ]
+    if waiting:
+        return {"status": "waiting_for_approval", "artifacts": waiting}
+    if existing is None:
+        artifact_id = store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=event_id,
+                kind="notion_package",
+                title=f"{appointment.company} Notion package",
+                status=ArtifactStatus.SCHEDULED,
+                notes="Approval complete; Notion publication queued",
+            )
+        )
+    else:
+        artifact_id = existing.id or 0
+    claim = f"publish:{datetime.now(UTC).isoformat()}"
+    if not store.claim_artifact_for_processing(
+        artifact_id,
+        allowed_statuses=(ArtifactStatus.SCHEDULED, ArtifactStatus.FAILED),
+        source_id=claim,
+        notes="Creating the approved private Notion page",
+    ):
+        return {"status": "publish_in_progress"}
+    sections = [f"# {appointment.company} — Growth Autopsy package"]
+    for item in artifacts:
+        assert item is not None
+        sections.extend(["", "---", "", f"## {item.title}", "", item.content.strip()])
+    markdown = "\n".join(sections).rstrip() + "\n"
+    try:
+        payload = await client.create_markdown_page(markdown)
+    except Exception as exc:
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.FAILED,
+            notes=str(exc)[:1000],
+        )
+        raise
+    page_id = str(payload["id"])
+    page_url = str(payload.get("url") or "")
+    store.update_artifact(
+        artifact_id,
+        status=ArtifactStatus.READY,
+        source_id=page_id,
+        content=page_url,
+        notes="Approved package created as a private Notion child page",
+    )
+    store.mark_appointment_status(event_id, AppointmentStatus.PUBLISHED)
+    return {"status": "published", "page_id": page_id, "url": page_url}
+
+
 async def automation_loop(
     settings: Settings,
     store: WorkflowStore,
-    hermes: HermesClient,
+    ai: AIClient,
     stop: asyncio.Event,
 ) -> None:
     while not stop.is_set():
@@ -393,8 +707,7 @@ async def automation_loop(
         except Exception as exc:
             record_sync_error(store, exc)
         try:
-            await run_due_precall_research(settings, store, hermes)
-            await collect_agent_outputs(settings, store, hermes)
+            await run_due_precall_research(settings, store, ai)
         except Exception as exc:
             store.set_setting("automation_last_error", str(exc)[:1000])
         store.set_setting("automation_last_tick_at", datetime.now(UTC).isoformat())
@@ -418,15 +731,58 @@ STAGES = [
     ("publish", "Notion + distribution"),
 ]
 
+REVIEWABLE_ARTIFACTS = {
+    "growth_autopsy",
+    "strategy_doc",
+    "pitch_deck_brief",
+}
+
+ARTIFACT_LABELS = {
+    "precall_evidence": "Evidence pack",
+    "precall_research": "Pre-call brief",
+    "founder_intelligence": "Founder Intelligence",
+    "growth_autopsy": "Growth Autopsy",
+    "strategy_decision": "Strategy routing",
+    "strategy_doc": "90-day strategy",
+    "pitch_deck_brief": "Pitch deck brief",
+    "notion_package": "Notion package",
+}
+
 
 def _stage_state(index: int, active: int) -> str:
     return "complete" if index < active else "active" if index == active else "pending"
 
 
-def _appointment_payload(store: WorkflowStore, appointment: Appointment) -> dict[str, Any]:
+def _appointment_payload(
+    settings: Settings,
+    store: WorkflowStore,
+    appointment: Appointment,
+    *,
+    now: datetime | None = None,
+    include_details: bool = False,
+) -> dict[str, Any]:
+    current = now or datetime.now(UTC)
     artifacts = store.list_artifacts(appointment.calendar_event_id)
     kinds = {item.kind: item for item in artifacts}
     recordings = store.list_recordings(appointment.calendar_event_id)
+    delivery_at = appointment.start_at - timedelta(
+        minutes=settings.precall_delivery_minutes
+    )
+    precall = kinds.get("precall_research")
+    if precall and precall.status in {
+        ArtifactStatus.READY,
+        ArtifactStatus.APPROVED,
+        ArtifactStatus.REVISION_REQUESTED,
+    }:
+        delivery_state = (
+            "ready_on_time"
+            if precall.updated_at is None or precall.updated_at <= delivery_at
+            else "ready_late"
+        )
+    elif current >= delivery_at:
+        delivery_state = "overdue"
+    else:
+        delivery_state = "scheduled"
     active = 0
     if "precall_research" in kinds and kinds["precall_research"].status in {
         ArtifactStatus.READY,
@@ -440,14 +796,121 @@ def _appointment_payload(store: WorkflowStore, appointment: Appointment) -> dict
         active = max(active, 3)
     if any(item.analysis_run_id for item in recordings):
         active = max(active, 4)
-    if "founder_intelligence" in kinds:
+    if "founder_intelligence" in kinds or appointment.status == AppointmentStatus.INTELLIGENCE_READY:
         active = max(active, 5)
-    if appointment.status == AppointmentStatus.CONTENT_DRAFTED:
+    if any(kinds.get(kind) for kind in DELIVERABLES):
         active = max(active, 6)
-    if any(item.status in {ArtifactStatus.APPROVED, ArtifactStatus.REVISION_REQUESTED} for item in artifacts):
+    if appointment.status == AppointmentStatus.CONTENT_DRAFTED or any(
+        item.kind in DELIVERABLES
+        and item.status in {ArtifactStatus.READY, ArtifactStatus.APPROVED, ArtifactStatus.REVISION_REQUESTED}
+        for item in artifacts
+    ):
         active = max(active, 7)
+    if appointment.status == AppointmentStatus.PUBLISHED or "notion_package" in kinds:
+        active = len(STAGES)
     if appointment.status == AppointmentStatus.CANCELLED:
         active = 0
+    stages = [
+        {"key": key, "label": label, "state": _stage_state(index, active)}
+        for index, (key, label) in enumerate(STAGES)
+    ]
+    current_stage = next(
+        (stage for stage in stages if stage["state"] == "active"),
+        stages[-1] if active >= len(STAGES) else stages[0],
+    )
+    strategy_intent = store.get_setting(
+        f"strategy_intent:{appointment.calendar_event_id}"
+    ) or appointment.strategy_mode
+    approval_items = [
+        item
+        for item in artifacts
+        if item.kind in REVIEWABLE_ARTIFACTS and item.status == ArtifactStatus.READY
+    ]
+    routing = kinds.get("strategy_decision")
+    failed_artifacts = [item for item in artifacts if item.status == ArtifactStatus.FAILED]
+    required_kinds: list[str] = []
+    if "growth_autopsy" in kinds or strategy_intent in {
+        "case_study_only",
+        "strategy_requested",
+    }:
+        required_kinds.append("growth_autopsy")
+    if strategy_intent == "strategy_requested":
+        required_kinds.extend(["strategy_doc", "pitch_deck_brief"])
+    approved_count = sum(
+        kinds.get(kind) is not None and kinds[kind].status == ArtifactStatus.APPROVED
+        for kind in required_kinds
+    )
+    reasons: list[str] = []
+    if appointment.status == AppointmentStatus.NEEDS_INPUT:
+        reasons.append("Calendar event needs a company and website")
+    if appointment.status == AppointmentStatus.FAILED or appointment.last_error:
+        reasons.append(appointment.last_error or "Workflow failed")
+    if delivery_state == "overdue" and current < appointment.start_at:
+        reasons.append("Pre-call brief missed the T-30 delivery target")
+    if approval_items:
+        reasons.append(f"{len(approval_items)} document(s) awaiting approval")
+    if routing and routing.status == ArtifactStatus.READY:
+        reasons.append("Strategy route requires Diksha's decision")
+    if failed_artifacts:
+        reasons.append(f"{len(failed_artifacts)} artifact(s) failed")
+
+    if appointment.status == AppointmentStatus.CANCELLED:
+        next_action = "No action — call cancelled"
+    elif appointment.status == AppointmentStatus.NEEDS_INPUT:
+        next_action = "Add the company and website to Calendar"
+    elif appointment.status == AppointmentStatus.FAILED or failed_artifacts:
+        next_action = "Review the error and retry the failed step"
+    elif routing and routing.status == ArtifactStatus.READY:
+        next_action = "Choose case-study-only or create strategy + deck"
+    elif approval_items:
+        next_action = f"Review {len(approval_items)} ready document(s)"
+    elif any(item.status == ArtifactStatus.PROCESSING for item in artifacts):
+        next_action = "Automation is processing the next document"
+    elif appointment.status == AppointmentStatus.PUBLISHED:
+        next_action = "Package complete in Notion"
+    elif current < appointment.start_at and precall is None:
+        next_action = "Wait for scheduled pre-call research"
+    elif current < appointment.start_at:
+        next_action = "Prepare for the discovery call"
+    elif not recordings:
+        next_action = "Waiting for the matched Fathom transcript"
+    elif required_kinds and approved_count == len(required_kinds):
+        next_action = "Publish the approved package to Notion"
+    else:
+        next_action = "Automation is waiting for the next trigger"
+
+    recordings_payload = []
+    if include_details:
+        for recording in recordings:
+            duration_seconds = None
+            if recording.recording_start_at and recording.recording_end_at:
+                duration_seconds = max(
+                    0,
+                    round(
+                        (
+                            recording.recording_end_at
+                            - recording.recording_start_at
+                        ).total_seconds()
+                    ),
+                )
+            recordings_payload.append(
+                {
+                    "recording_id": recording.recording_id,
+                    "status": recording.status.value,
+                    "scheduled_start_at": recording.scheduled_start_at.isoformat(),
+                    "recording_start_at": _iso(recording.recording_start_at),
+                    "recording_end_at": _iso(recording.recording_end_at),
+                    "duration_seconds": duration_seconds,
+                    "external_invitee_count": len(recording.external_invitee_emails),
+                    "transcript_available": bool(recording.transcript_path),
+                    "fathom_url": str(
+                        recording.payload.get("share_url")
+                        or recording.payload.get("url")
+                        or ""
+                    ),
+                    "last_error": recording.last_error,
+                }
+            )
     return {
         "calendar_event_id": appointment.calendar_event_id,
         "title": appointment.title,
@@ -457,12 +920,28 @@ def _appointment_payload(store: WorkflowStore, appointment: Appointment) -> dict
         "founder_email": appointment.founder_email,
         "founder_linkedin": appointment.founder_linkedin,
         "industry": appointment.industry,
+        "meeting_agenda": appointment.meeting_agenda,
         "strategy_mode": appointment.strategy_mode,
+        "strategy_intent": strategy_intent,
+        "conference_url": calendar_conference_url(appointment.source_payload),
         "start_at": appointment.start_at.isoformat(),
         "end_at": appointment.end_at.isoformat(),
         "status": appointment.status.value,
         "last_error": appointment.last_error,
         "research_start_at": _iso(appointment.research_start_at),
+        "precall_delivery_at": delivery_at.isoformat(),
+        "precall_delivery_state": delivery_state,
+        "current_stage": current_stage,
+        "next_action": next_action,
+        "attention_reasons": reasons,
+        "needs_attention": bool(reasons),
+        "approval": {
+            "required": len(required_kinds),
+            "approved": approved_count,
+            "awaiting_review": len(approval_items),
+        },
+        "recording_count": len(recordings),
+        "latest_recording_status": recordings[0].status.value if recordings else None,
         "precall_can_run": bool(
             appointment.website
             and appointment.status != AppointmentStatus.CANCELLED
@@ -472,57 +951,179 @@ def _appointment_payload(store: WorkflowStore, appointment: Appointment) -> dict
             )
         ),
         "progress": round(min(active, len(STAGES)) / len(STAGES) * 100),
-        "stages": [
-            {"key": key, "label": label, "state": _stage_state(index, active)}
-            for index, (key, label) in enumerate(STAGES)
-        ],
+        "stages": stages,
         "artifacts": [_artifact_payload(item) for item in artifacts],
+        "recordings": recordings_payload,
+        "timeline": (
+            store.list_workflow_events(appointment.calendar_event_id, limit=100)
+            if include_details
+            else []
+        ),
     }
 
 
 def _artifact_payload(artifact: Artifact) -> dict[str, Any]:
+    if artifact.kind == "strategy_decision" and artifact.status == ArtifactStatus.READY:
+        action = "route"
+    elif artifact.kind in REVIEWABLE_ARTIFACTS and artifact.status == ArtifactStatus.READY:
+        action = "review"
+    elif artifact.status == ArtifactStatus.FAILED:
+        action = "retry"
+    elif artifact.status == ArtifactStatus.REVISION_REQUESTED:
+        action = "revision"
+    else:
+        action = "none"
     return {
         "id": artifact.id,
         "kind": artifact.kind,
+        "label": ARTIFACT_LABELS.get(artifact.kind, artifact.kind.replace("_", " ").title()),
         "title": artifact.title,
         "status": artifact.status.value,
         "source_id": artifact.source_id,
         "filename": Path(artifact.file_path).name if artifact.file_path else "",
         "has_file": bool(artifact.file_path),
         "notes": artifact.notes,
+        "external_url": artifact.content if artifact.kind == "notion_package" else "",
         "created_at": _iso(artifact.created_at),
         "updated_at": _iso(artifact.updated_at),
+        "action_required": action,
     }
 
 
+def appointment_detail_payload(
+    settings: Settings,
+    store: WorkflowStore,
+    calendar_event_id: str,
+) -> dict[str, Any] | None:
+    appointment = store.get_appointment(calendar_event_id)
+    if appointment is None:
+        return None
+    return _appointment_payload(
+        settings,
+        store,
+        appointment,
+        now=datetime.now(UTC),
+        include_details=True,
+    )
+
+
+def _integration_state(configured: bool, *, error: str | None = None) -> str:
+    if error:
+        return "attention"
+    return "configured" if configured else "not_configured"
+
+
 def dashboard_payload(settings: Settings, store: WorkflowStore) -> dict[str, Any]:
-    appointments = store.list_appointments(limit=200)
-    payloads = [_appointment_payload(store, item) for item in appointments]
-    attention = sum(
-        item["status"] in {AppointmentStatus.NEEDS_INPUT.value, AppointmentStatus.FAILED.value}
-        or any(
-            artifact["status"] in {
-                ArtifactStatus.READY.value,
-                ArtifactStatus.REVISION_REQUESTED.value,
-                ArtifactStatus.FAILED.value,
-            }
-            for artifact in item["artifacts"]
-        )
+    appointments = store.list_appointments(limit=500)
+    now = datetime.now(UTC)
+    payloads = [
+        _appointment_payload(settings, store, item, now=now) for item in appointments
+    ]
+    attention = sum(item["needs_attention"] for item in payloads)
+    awaiting_approval = sum(item["approval"]["awaiting_review"] for item in payloads)
+    routing_decisions = sum(
+        any(artifact["action_required"] == "route" for artifact in item["artifacts"])
         for item in payloads
     )
+    stage_counts = {key: 0 for key, _ in STAGES}
+    for item in payloads:
+        stage_counts[item["current_stage"]["key"]] += 1
+    companies = {item["calendar_event_id"]: item["company"] for item in payloads}
+    recent_activity = store.list_workflow_events(limit=12)
+    for event in recent_activity:
+        event["company"] = companies.get(event["calendar_event_id"], "Unknown company")
+    calendar_error = store.get_setting("calendar_last_error") or None
+    integrations = [
+        {
+            "key": "database",
+            "label": "SQL database",
+            "state": "connected",
+            "detail": "SQLite · WAL mode",
+        },
+        {
+            "key": "calendar",
+            "label": "Google Calendar",
+            "state": _integration_state(settings.google_token_file.exists(), error=calendar_error),
+            "detail": calendar_error or (
+                "OAuth token configured" if settings.google_token_file.exists() else "OAuth token missing"
+            ),
+        },
+        {
+            "key": "ai",
+            "label": "AI synthesis",
+            "state": _integration_state(
+                bool(settings.ai_api_key and settings.ai_model)
+            ),
+            "detail": (
+                f"Direct model: {settings.ai_model}"
+                if settings.ai_api_key and settings.ai_model
+                else "API key or model missing"
+            ),
+        },
+        {
+            "key": "fathom",
+            "label": "Fathom",
+            "state": _integration_state(bool(settings.fathom_webhook_secret)),
+            "detail": (
+                "Webhook + API fallback configured"
+                if settings.fathom_webhook_secret and settings.fathom_api_key
+                else "Webhook configured" if settings.fathom_webhook_secret else "Webhook secret missing"
+            ),
+        },
+        {
+            "key": "notion",
+            "label": "Notion",
+            "state": _integration_state(
+                bool(settings.notion_api_key and settings.notion_parent_page_id)
+            ),
+            "detail": (
+                "Private page publishing configured"
+                if settings.notion_api_key and settings.notion_parent_page_id
+                else "Connection or parent page missing"
+            ),
+        },
+        {
+            "key": "browser",
+            "label": "Playwright",
+            "state": "enabled" if settings.playwright_enabled else "disabled",
+            "detail": "Chromium public research renderer",
+        },
+        {
+            "key": "semrush",
+            "label": "Semrush MCP",
+            "state": (
+                "configured"
+                if settings.semrush_mcp_enabled and settings.semrush_api_key
+                else "optional"
+            ),
+            "detail": (
+                f"Direct MCP · max {settings.semrush_mcp_max_reports} reports"
+                if settings.semrush_mcp_enabled and settings.semrush_api_key
+                else "Optional subscription/unit-metered enrichment"
+            ),
+        },
+    ]
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "system": {
             "calendar_last_sync_at": store.get_setting("calendar_last_sync_at"),
-            "calendar_last_error": store.get_setting("calendar_last_error") or None,
+            "calendar_last_error": calendar_error,
             "automation_last_tick_at": store.get_setting("automation_last_tick_at"),
             "research_backend": settings.precall_research_backend,
+            "environment": settings.environment,
+            "background_sync_enabled": settings.enable_background_sync,
+            "sync_interval_seconds": settings.background_sync_interval_seconds,
+            "integrations": integrations,
+            "database_counts": store.database_counts(),
             "free_collectors": [
-                "Website crawl",
+                "Playwright-rendered website crawl",
                 "robots.txt + sitemap",
                 "DuckDuckGo public search",
                 "Google PageSpeed / local Lighthouse",
                 "On-page SEO + technology signals",
+                "Social + marketplace footprint",
+                "Ad transparency discovery",
+                "Optional licensed Semrush MCP enrichment",
             ],
         },
         "metrics": {
@@ -530,11 +1131,31 @@ def dashboard_payload(settings: Settings, store: WorkflowStore) -> dict[str, Any
             "active": sum(
                 item["status"] not in {
                     AppointmentStatus.CANCELLED.value,
-                    AppointmentStatus.CONTENT_DRAFTED.value,
+                    AppointmentStatus.PUBLISHED.value,
                 }
                 for item in payloads
             ),
             "needs_attention": attention,
+            "awaiting_approval": awaiting_approval,
+            "routing_decisions": routing_decisions,
+            "sla_at_risk": sum(
+                item["precall_delivery_state"] == "overdue"
+                and datetime.fromisoformat(item["start_at"]) > now
+                for item in payloads
+            ),
+            "published": sum(
+                item["status"] == AppointmentStatus.PUBLISHED.value for item in payloads
+            ),
+            "failed": sum(
+                item["status"] == AppointmentStatus.FAILED.value for item in payloads
+            ),
+            "today": sum(
+                datetime.fromisoformat(item["start_at"]).astimezone().date()
+                == now.astimezone().date()
+                for item in payloads
+            ),
         },
+        "pipeline_counts": stage_counts,
+        "recent_activity": recent_activity,
         "appointments": payloads,
     }

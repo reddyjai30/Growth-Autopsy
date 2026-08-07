@@ -5,10 +5,13 @@ import binascii
 import hashlib
 import hmac
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping
+
+import httpx
 
 from .domain import AppointmentStatus, Recording, RecordingStatus
 from .hermes import HermesClient
@@ -17,6 +20,46 @@ from .store import WorkflowStore
 
 class FathomWebhookError(ValueError):
     pass
+
+
+class FathomApiClient:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        self.api_key = api_key
+        self.transport = transport
+
+    async def get_transcript(self, recording_id: int) -> list[dict]:
+        if not self.api_key:
+            raise FathomWebhookError(
+                "Fathom webhook omitted the transcript and GA_FATHOM_API_KEY is not configured"
+            )
+        async with httpx.AsyncClient(
+            base_url="https://api.fathom.ai/external/v1",
+            headers={"X-Api-Key": self.api_key},
+            timeout=30,
+            transport=self.transport,
+            trust_env=False,
+        ) as client:
+            response = await client.get(f"/recordings/{recording_id}/transcript")
+        if response.is_error:
+            raise FathomWebhookError(
+                f"Fathom transcript fetch failed ({response.status_code}): {response.text[:500]}"
+            )
+        transcript = response.json().get("transcript")
+        if not isinstance(transcript, list) or not transcript:
+            raise FathomWebhookError("Fathom returned an empty transcript")
+        return transcript
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
 
 
 def _headers_lower(headers: Mapping[str, str]) -> dict[str, str]:
@@ -128,12 +171,15 @@ class FathomIngestionService:
         webhook_secret: str,
         transcript_dir: Path,
         match_window_minutes: int,
+        api_key: str = "",
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.store = store
         self.hermes = hermes
         self.webhook_secret = webhook_secret
         self.transcript_dir = transcript_dir
         self.match_window_minutes = match_window_minutes
+        self.api = FathomApiClient(api_key, transport=transport)
 
     async def ingest(
         self,
@@ -157,6 +203,8 @@ class FathomIngestionService:
             scheduled_start = _parse_datetime(payload.get("scheduled_start_time"))
             if scheduled_start is None:
                 raise FathomWebhookError("Fathom payload is missing scheduled_start_time")
+            if not payload.get("transcript"):
+                payload["transcript"] = await self.api.get_transcript(recording_id)
 
             existing_recording = self.store.get_recording(recording_id)
             if existing_recording and existing_recording.analysis_run_id:
@@ -186,10 +234,9 @@ class FathomIngestionService:
             self.transcript_dir.mkdir(parents=True, exist_ok=True)
             transcript_path = (self.transcript_dir / f"{recording_id}.md").resolve()
             payload_path = (self.transcript_dir / f"{recording_id}.json").resolve()
-            transcript_path.write_text(transcript_to_markdown(payload), encoding="utf-8")
-            payload_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            _atomic_write_text(transcript_path, transcript_to_markdown(payload))
+            _atomic_write_text(
+                payload_path, json.dumps(payload, ensure_ascii=False, indent=2)
             )
 
             recording = Recording(

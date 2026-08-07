@@ -58,13 +58,22 @@ def _description_as_text(description: str) -> str:
 
 def parse_description(description: str) -> dict[str, str]:
     fields: dict[str, str] = {}
+    continuation_key: str | None = None
     for line in _description_as_text(description).splitlines():
         if ":" not in line:
+            if continuation_key and line.strip():
+                continuation = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+                if continuation:
+                    existing = fields.get(continuation_key, "")
+                    fields[continuation_key] = "\n".join(
+                        item for item in (existing, continuation) if item
+                    )
             continue
         key, value = line.split(":", 1)
         normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().casefold()).strip("_")
         if normalized:
             fields[normalized] = value.strip()
+            continuation_key = normalized if normalized in {"meeting_agenda", "agenda"} else None
     return fields
 
 
@@ -73,6 +82,26 @@ def _company_from_title(title: str, prefix: str) -> str:
     if prefix and cleaned.casefold().startswith(prefix.casefold()):
         cleaned = cleaned[len(prefix) :].strip()
     return re.split(r"\s+[–—-]\s+", cleaned, maxsplit=1)[0].strip()
+
+
+def _founder_from_title(title: str, prefix: str) -> str:
+    cleaned = title
+    if prefix and cleaned.casefold().startswith(prefix.casefold()):
+        cleaned = cleaned[len(prefix) :].strip()
+    parts = re.split(r"\s+[–—-]\s+", cleaned, maxsplit=1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
+def calendar_conference_url(event: dict[str, Any]) -> str:
+    """Return the Google Meet/video entry point when Calendar supplied one."""
+
+    if event.get("hangoutLink"):
+        return str(event["hangoutLink"])
+    entries = (event.get("conferenceData") or {}).get("entryPoints") or []
+    for entry in entries:
+        if entry.get("entryPointType") == "video" and entry.get("uri"):
+            return str(entry["uri"])
+    return ""
 
 
 def parse_calendar_event(
@@ -108,11 +137,22 @@ def parse_calendar_event(
     ]
     first_attendee = external_attendees[0] if external_attendees else {}
 
-    company = fields.get("company") or _company_from_title(title, title_prefix)
-    website = fields.get("website", "")
-    founder_email = fields.get("founder_email") or str(first_attendee.get("email") or "")
-    founder_name = fields.get("founder") or fields.get("founder_name") or str(
-        first_attendee.get("displayName") or ""
+    company = (
+        fields.get("company")
+        or fields.get("company_name")
+        or _company_from_title(title, title_prefix)
+    )
+    website = fields.get("company_website") or fields.get("website", "")
+    founder_email = (
+        fields.get("founder_email")
+        or fields.get("email")
+        or str(first_attendee.get("email") or "")
+    )
+    founder_name = (
+        fields.get("founder")
+        or fields.get("founder_name")
+        or str(first_attendee.get("displayName") or "")
+        or _founder_from_title(title, title_prefix)
     )
 
     status = AppointmentStatus.BOOKED
@@ -135,6 +175,7 @@ def parse_calendar_event(
         end_at=_parse_datetime(end_raw),
         status=status,
         source_payload=event,
+        meeting_agenda=fields.get("meeting_agenda", fields.get("agenda", "")),
     )
 
 
@@ -158,7 +199,8 @@ class GoogleCalendarGateway:
         if not self.token_file.exists():
             raise FileNotFoundError(
                 f"Google OAuth token not found: {self.token_file}. "
-                "Authorize the Hermes google-workspace skill first."
+                "Run `growth-autopsy calendar-auth --client-secret "
+                "/path/to/google-oauth-desktop-client.json` and retry."
             )
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
@@ -230,6 +272,9 @@ class CalendarIngestionService:
             if not event_id:
                 result.ignored += 1
                 continue
+            if self.store.is_appointment_dismissed(event_id):
+                result.ignored += 1
+                continue
             existing = self.store.get_appointment(event_id)
             if event.get("status") == "cancelled":
                 if existing:
@@ -257,7 +302,9 @@ class CalendarIngestionService:
             if not changed:
                 continue
 
-            self.store.upsert_appointment(appointment)
+            if not self.store.upsert_appointment(appointment):
+                result.ignored += 1
+                continue
             if appointment.status == AppointmentStatus.NEEDS_INPUT:
                 if existing and existing.research_job_id:
                     await self.hermes.delete_job(existing.research_job_id)

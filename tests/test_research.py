@@ -27,6 +27,7 @@ def appointment() -> Appointment:
         end_at=datetime(2026, 8, 7, 11, tzinfo=UTC),
         status=AppointmentStatus.RESEARCH_SCHEDULED,
         source_payload={},
+        meeting_agenda="Discuss acquisition and conversion",
     )
 
 
@@ -38,7 +39,10 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
     <meta name="viewport" content="width=device-width"></head>
     <body><h1>Better shoes for remote teams</h1><a href="/pricing">See pricing</a>
     <a href="/case-studies">Customer stories</a><button>Shop now</button>
-    <form><input type="email"></form><p>Trusted by 1,000 teams</p></body></html>
+    <a href="https://instagram.com/acme">Instagram</a>
+    <a href="https://linkedin.com/company/acme">LinkedIn</a>
+    <form><input type="email"></form><p>Trusted by 1,000 teams</p>
+    <script>fbq('init', '123'); ttq.load('456')</script></body></html>
     """
     pricing = "<html><head><title>Acme pricing</title></head><body><h1>Plans</h1><button>Buy now</button></body></html>"
 
@@ -57,6 +61,8 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
 
     async def search(query: str, limit: int) -> list[dict[str, str]]:
         del limit
+        if "competitors alternatives" in query:
+            return [{"title": "Beta Shoes", "url": "https://beta.example", "snippet": query}]
         return [{"title": "Acme review", "url": "https://review.example/acme", "snippet": query}]
 
     settings = Settings(
@@ -64,6 +70,8 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
         shared_workdir=tmp_path,
         lighthouse_executable=tmp_path / "lighthouse",
         precall_max_pages=4,
+        semrush_mcp_enabled=False,
+        semrush_api_key="",
     ).resolve_paths(tmp_path)
     researcher = FreePrecallResearcher(
         settings,
@@ -81,3 +89,12 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
     assert evidence["pagespeed"]["mobile"]["scores"]["performance"] == 91
     assert evidence["traffic"]["estimated_monthly_visits"] is None
     assert evidence["public_search"]["queries"][0]["results"]
+    assert len(evidence["public_search"]["queries"]) == 8
+    assert evidence["channels"]["channels"]["instagram"]["status"] == "observed_from_company_website"
+    assert evidence["channels"]["channels"]["linkedin"]["status"] == "observed_from_company_website"
+    assert evidence["ads"]["tracking_technology_observed"] == ["Meta Pixel", "TikTok Pixel"]
+    assert evidence["ads"]["meta"]["status"] == "official_library_verification_required"
+    assert evidence["competitors"]["candidates"][0]["host"] == "beta.example"
+    assert evidence["appointment"]["meeting_agenda"] == (
+        "Discuss acquisition and conversion"
+    )
