@@ -1,9 +1,9 @@
 ---
 name: marketing-strategy-writer
-description: Draft evidence-backed 90-day marketing strategies.
+description: Convert one founder-stated problem into the nine-section sales Strategy Doc using mirror, pain arithmetic, absolution, standalone strategy, lane routing, ROI, and two-option pricing gates.
 license: MIT
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   author: Jai and Hermes Agent
   hermes:
     tags: [marketing, strategy, roadmap, pitch]
@@ -12,9 +12,9 @@ metadata:
 
 # Marketing Strategy Writer Skill
 
-Draft a practical 90-day marketing strategy from public research and founder
-intelligence. Leave service selection, commercial positioning, and pricing for
-Diksha; a parallel deck brief may contain explicit placeholders only.
+Draft a one-problem Strategy Doc from founder intelligence. The selected lane
+follows the problem the founder named; unsupported commercial values remain
+explicit Diksha input fields.
 
 ## When to Use
 
@@ -32,44 +32,45 @@ Read `references/strategy-output-contract.md` before drafting.
 
 ## How to Run
 
-Use the supplied evidence to draft recommendations and explicitly surface missing
-inputs. Return an internal strategy document; do not export a final deck, send a
-proposal, or determine a price.
+Use the supplied evidence to draft the strategy and surface missing inputs. Return
+an internal document. The deck is a dependent artifact created only after Diksha
+approves this strategy.
 
 ## Quick Reference
 
-Prioritize work using:
+Sales sequence:
 
 ```text
-Expected impact × evidence strength × speed to learn ÷ effort and dependency risk
+Agitate → Mirror → Diagnose → Authority → Vision → Strategy → Gap → Inoculate → Vehicle → De-risk → ROI → Price
 ```
 
 Separate quick wins from foundational work and experiments.
 
 ## Procedure
 
-1. Restate the founder's goal, baseline, constraints, and strategy ask.
-2. Identify the three highest-leverage growth problems supported by evidence.
-3. Define a strategic thesis and what must be true for it to work.
-4. Create a 30/60/90-day roadmap with owners, dependencies, and decision gates.
-5. Recommend channels only when they fit the ICP, offer, economics, and capacity.
-6. Define quick wins, foundational work, and controlled experiments.
-7. Attach KPIs to decisions; never invent current baselines.
-8. Add risks, assumptions, unavailable data, and account-access requests.
-9. Provide service-package options as placeholders for Diksha's judgment.
-10. Add explicit fields for Diksha's edits, selected scope, and price.
+1. Mirror the exact founder quote and amplify only that pain through arithmetic.
+2. Absolve the founder and diagnose the missing system.
+3. Establish only evidenced MMS pattern authority.
+4. Future-pace the concrete day-90 destination.
+5. Give 3–4 sound, service-free strategy phases.
+6. Respectfully quantify the DIY execution gap.
+7. For paid media only, inoculate against past-ad concerns without blame.
+8. Reveal one service vehicle mapped one-to-one to the agreed phases.
+9. De-risk with only true deliverables, cadence, capacity and terms.
+10. Build conservative ROI from founder inputs, then put exactly two options and
+    price fields in the final section only.
 
 ## Pitfalls
 
-- Do not recommend every channel.
+- Do not pitch a lane different from the founder's stated problem.
 - Do not present benchmarks as the client's actual performance.
 - Do not promise revenue or fixed growth outcomes.
 - Do not invent budget, margin, conversion rate, CAC, or team capacity.
-- Do not set pricing or package scope without Diksha.
+- Never invent pricing, spend, guarantees, scarcity or start dates; use conspicuous fields.
 - Do not export or send a final pitch deck before Diksha approves strategy and commercials.
 
 ## Verification
 
-Verify that every priority maps to a founder goal or evidenced constraint, KPIs
-contain no invented baseline, the plan fits 90 days, risks are explicit, and the
-document ends at the Diksha approval gate.
+Verify the exact quote, absolution, service-free 6A, conditional 6D, one-to-one
+vehicle mapping, conservative founder-number maths, exactly two same-lane options,
+price last, and a locked-date field.

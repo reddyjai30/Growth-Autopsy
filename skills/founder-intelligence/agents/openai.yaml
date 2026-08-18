@@ -1,4 +1,4 @@
 interface:
   display_name: "Founder Intelligence"
-  short_description: "Extract grounded intelligence from a founder call"
-  default_prompt: "Analyze this founder call transcript and extract grounded problems, goals, numbers, objections, and opportunities."
+  short_description: "Build the evidence, safety, and one-problem routing ledger"
+  default_prompt: "Analyze this founder call into the complete internal evidence ledger, public-safety decisions, exact stated problem, strategy intent, and one service lane."

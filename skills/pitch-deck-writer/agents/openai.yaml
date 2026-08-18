@@ -1,4 +1,4 @@
 interface:
   display_name: Pitch Deck Writer
-  short_description: Draft evidence-grounded Gamma deck briefs.
-  default_prompt: Draft a Gamma-ready pitch deck brief from approved source documents.
+  short_description: Convert the approved strategy into a 13/14-slide deck.
+  default_prompt: Convert the approved one-problem Strategy Doc into the exact Gamma-ready pitch deck without changing its evidence, lane, maths, or commercial decisions.

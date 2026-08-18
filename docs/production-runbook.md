@@ -1,5 +1,10 @@
 # Production runbook
 
+For the hosted Ubuntu + Amazon EC2 procedure, use
+[`deploy-ec2.md`](deploy-ec2.md). It is the authoritative deployment sequence for
+systemd, Nginx, HTTPS, persistent storage, operator authentication, Google token
+transfer and the live Fathom webhook URL.
+
 ## 1. Runtime installation
 
 ```bash
@@ -90,11 +95,31 @@ capabilities, and share the chosen parent page with it. Configure
 `GA_NOTION_API_KEY` and `GA_NOTION_PARENT_PAGE_ID`.
 
 The controller creates one private Markdown child page only after all required
-artifacts are approved. A case-study-only call requires the Growth Autopsy
-approval. A strategy call requires Growth Autopsy, strategy and pitch-deck brief
-approvals. The stored Notion page ID makes retries idempotent.
+artifacts are approved. A report-only call requires both the Growth Intelligence
+Report and its approval-derived LinkedIn draft. A strategy call additionally
+requires the one-problem Strategy Doc and its approval-derived pitch deck. The
+stored Notion page ID makes retries idempotent.
 
-## 7. Start and verify
+## 7. LinkedIn personal-profile publishing
+
+In LinkedIn Developer Portal, enable Share on LinkedIn and Sign In with LinkedIn
+using OpenID Connect. Register the exact redirect URI
+`http://localhost:8787/internal/linkedin/oauth/callback`. Configure the client ID,
+client secret, redirect URI, token path and API version, then set
+`GA_LINKEDIN_PUBLISH_AFTER_NOTION=true`.
+
+Restart the service and use Admin → Configuration → Connect LinkedIn. The token is
+stored in `./secrets/linkedin-token.json` with mode `0600`. After all applicable
+documents are approved, the controller publishes Notion first and the approved
+LinkedIn draft second. Both external IDs are persisted. Definite LinkedIn failures
+may be retried from the package publish action; ambiguous transport outcomes pause
+for manual profile verification. The dashboard can record the existing post URL or
+retry only after the operator confirms that no post appeared.
+
+Founder/public-content consent remains an operational prerequisite. First-comment
+publishing, founder email and public Notion sharing remain separate actions.
+
+## 8. Start and verify
 
 ```bash
 uv run pytest
@@ -104,3 +129,15 @@ uv run growth-autopsy serve --host 127.0.0.1 --port 8787
 
 Open `http://127.0.0.1:8787`, confirm the Calendar sync timestamp, and run one
 test event manually before enabling the background loop for live calls.
+
+## 9. Hosted production access
+
+`GA_ENVIRONMENT=production` enables signed operator sessions. The service refuses to
+start unless `GA_APP_USERNAME`, `GA_APP_PASSWORD` (12+ characters), and
+`GA_SESSION_SECRET` (32+ characters) are configured. Health checks and the Fathom
+webhook remain public; the dashboard, document routes, admin console and every other
+internal API require login.
+
+On the EC2 host, keep `GA_MANAGED_CONFIGURATION=false`. Authenticated Admin changes
+are written atomically to the persistent `/opt/growth-autopsy/.env` file. Restart the
+systemd service after changes so the running process reloads them.

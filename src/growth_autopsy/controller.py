@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .ai import AIClient
 from .calendar_ingestion import (
@@ -17,7 +18,21 @@ from .calendar_ingestion import (
 from .config import Settings
 from .domain import Artifact, ArtifactStatus, Appointment, AppointmentStatus, RecordingStatus
 from .hermes import HermesClient
+from .linkedin import (
+    LinkedInAmbiguousPublishError,
+    LinkedInAuthorizationError,
+    LinkedInClient,
+    LinkedInPublishError,
+    LinkedInTokenStore,
+    extract_linkedin_commentary,
+)
 from .notion import NotionClient
+from .postcall_framework import (
+    FrameworkValidationError,
+    extract_service_lane,
+    validate_founder_intelligence,
+    validate_postcall_deliverable,
+)
 from .research import FreePrecallResearcher, LocalPrecallScheduler, render_evidence_markdown
 from .store import WorkflowStore
 
@@ -330,6 +345,13 @@ async def _collect_postcall_run(
         appointment = store.get_appointment(event_id)
         if appointment is None:
             return {"recording_id": recording_id, "status": "unmatched"}
+        try:
+            validate_founder_intelligence(output)
+        except FrameworkValidationError as exc:
+            message = f"Hermes Founder Intelligence failed the production framework: {exc}"
+            store.mark_recording_status(recording_id, RecordingStatus.FAILED, message[:1000])
+            store.mark_appointment_status(event_id, AppointmentStatus.FAILED, message[:1000])
+            return {"recording_id": recording_id, "status": "failed", "error": message}
         path = _artifact_directory(settings, appointment) / "founder-intelligence.md"
         _atomic_write_text(path, output + "\n")
         store.upsert_artifact(
@@ -369,9 +391,18 @@ async def _collect_postcall_run(
 
 
 DELIVERABLES: dict[str, tuple[str, str]] = {
-    "growth_autopsy": ("growth-autopsy.md", "Growth Autopsy / case-study draft"),
-    "strategy_doc": ("90-day-strategy.md", "90-day marketing strategy"),
-    "pitch_deck_brief": ("pitch-deck-brief.md", "Gamma-ready pitch deck brief"),
+    "growth_autopsy": ("growth-intelligence-report.md", "Growth Intelligence Report"),
+    "linkedin_post": ("linkedin-growth-autopsy-post.md", "LinkedIn Growth Autopsy post"),
+    "strategy_doc": ("one-problem-strategy.md", "one-problem Strategy Doc"),
+    "pitch_deck_brief": ("pitch-deck-brief.md", "Gamma-ready pitch deck"),
+}
+
+DEPENDENT_DELIVERABLES = {
+    "growth_autopsy": "linkedin_post",
+    "strategy_doc": "pitch_deck_brief",
+}
+PARENT_DELIVERABLES = {
+    child: parent for parent, child in DEPENDENT_DELIVERABLES.items()
 }
 
 
@@ -387,6 +418,55 @@ def classify_strategy_intent(appointment: Appointment, founder_intelligence: str
         flags=re.I,
     )
     return matches[-1].casefold() if matches else "unsure"
+
+
+def classify_service_lane(founder_intelligence: str) -> str:
+    return extract_service_lane(founder_intelligence)
+
+
+def _schedule_dependent_deliverable(
+    store: WorkflowStore,
+    appointment: Appointment,
+    parent_kind: str,
+) -> None:
+    child_kind = DEPENDENT_DELIVERABLES.get(parent_kind)
+    if child_kind is None or store.get_artifact_by_kind(
+        appointment.calendar_event_id, child_kind
+    ):
+        return
+    _, title = DELIVERABLES[child_kind]
+    parent_label = DELIVERABLES[parent_kind][1]
+    store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=appointment.calendar_event_id,
+            kind=child_kind,
+            title=f"{appointment.company} {title}",
+            status=ArtifactStatus.SCHEDULED,
+            source_id=f"depends:{parent_kind}",
+            notes=f"Waiting for Diksha to approve the {parent_label}",
+        )
+    )
+
+
+def invalidate_dependent_deliverable(
+    store: WorkflowStore,
+    parent: Artifact,
+) -> None:
+    child_kind = DEPENDENT_DELIVERABLES.get(parent.kind)
+    if child_kind is None:
+        return
+    child = store.get_artifact_by_kind(parent.calendar_event_id, child_kind)
+    if child is None or child.id is None:
+        return
+    store.update_artifact(
+        child.id,
+        status=ArtifactStatus.SCHEDULED,
+        source_id=f"depends:{parent.kind}",
+        file_path="",
+        content="",
+        notes=f"Parent {DELIVERABLES[parent.kind][1]} changed; regenerate after approval",
+    )
 
 
 def _precall_report_content(store: WorkflowStore, event_id: str) -> str:
@@ -410,31 +490,72 @@ async def _generate_direct_deliverable(
     kind: str,
     founder_intelligence: str,
     precall_report: str,
+    *,
+    source_document: str = "",
 ) -> dict[str, Any]:
     existing = store.get_artifact_by_kind(appointment.calendar_event_id, kind)
-    if existing and existing.status in {
-        ArtifactStatus.READY,
-        ArtifactStatus.APPROVED,
-    } and existing.content.strip():
-        return {"kind": kind, "status": "already_ready", "artifact_id": existing.id}
+    if existing and existing.status == ArtifactStatus.APPROVED and existing.content.strip():
+        return {"kind": kind, "status": "already_approved", "artifact_id": existing.id}
+    if existing and existing.status == ArtifactStatus.READY and existing.content.strip():
+        try:
+            validate_postcall_deliverable(
+                kind,
+                existing.content,
+                brand=appointment.company,
+                has_external_research=bool(precall_report.strip()),
+                service_lane=classify_service_lane(founder_intelligence),
+            )
+        except FrameworkValidationError as exc:
+            if existing.id is not None:
+                store.update_artifact(
+                    existing.id,
+                    status=ArtifactStatus.FAILED,
+                    notes=f"Legacy draft requires v2 regeneration: {exc}"[:1000],
+                )
+            existing.status = ArtifactStatus.FAILED
+        else:
+            return {"kind": kind, "status": "already_ready", "artifact_id": existing.id}
     filename, title = DELIVERABLES[kind]
-    artifact_id = store.upsert_artifact(
-        Artifact(
-            id=None,
-            calendar_event_id=appointment.calendar_event_id,
-            kind=kind,
-            title=f"{appointment.company} {title}",
-            status=ArtifactStatus.PROCESSING,
+    if existing and existing.status == ArtifactStatus.PROCESSING:
+        return {"kind": kind, "status": "already_processing", "artifact_id": existing.id}
+    if existing and existing.id is not None:
+        artifact_id = existing.id
+        claimed = store.claim_artifact_for_processing(
+            artifact_id,
+            allowed_statuses=(
+                ArtifactStatus.SCHEDULED,
+                ArtifactStatus.FAILED,
+                ArtifactStatus.REVISION_REQUESTED,
+            ),
             source_id=f"direct:{ai.model}",
             notes="Direct AI draft generation is running",
         )
-    )
+        if not claimed:
+            return {
+                "kind": kind,
+                "status": existing.status.value.casefold(),
+                "artifact_id": artifact_id,
+            }
+    else:
+        artifact_id = store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind=kind,
+                title=f"{appointment.company} {title}",
+                status=ArtifactStatus.PROCESSING,
+                source_id=f"direct:{ai.model}",
+                notes="Direct AI draft generation is running",
+            )
+        )
     try:
         document = await ai.synthesize_postcall_deliverable(
             kind,
             appointment,
             founder_intelligence,
             precall_report,
+            source_document=source_document,
+            service_lane=classify_service_lane(founder_intelligence),
         )
         path = _artifact_directory(settings, appointment) / filename
         _atomic_write_text(path, document.rstrip() + "\n")
@@ -443,7 +564,11 @@ async def _generate_direct_deliverable(
             status=ArtifactStatus.READY,
             file_path=str(path),
             content=document,
-            notes="Direct AI draft completed; waiting for Diksha approval",
+            notes=(
+                "Generated from the approved parent document; waiting for Diksha approval"
+                if source_document
+                else "Direct AI draft completed; waiting for Diksha approval"
+            ),
         )
         return {"kind": kind, "status": "ready", "artifact_id": artifact_id}
     except Exception as exc:
@@ -481,13 +606,23 @@ async def run_direct_postcall_analysis(
             and intelligence.status in {ArtifactStatus.READY, ArtifactStatus.APPROVED}
             and intelligence.content.strip()
         ):
-            founder_intelligence = intelligence.content
+            try:
+                validate_founder_intelligence(intelligence.content)
+            except FrameworkValidationError:
+                founder_intelligence = await ai.synthesize_founder_intelligence(
+                    appointment,
+                    recording.payload,
+                    precall_report,
+                )
+            else:
+                founder_intelligence = intelligence.content
         else:
             founder_intelligence = await ai.synthesize_founder_intelligence(
                 appointment,
                 recording.payload,
                 precall_report,
             )
+        if intelligence is None or founder_intelligence != intelligence.content:
             path = _artifact_directory(settings, appointment) / "founder-intelligence.md"
             _atomic_write_text(path, founder_intelligence.rstrip() + "\n")
             store.upsert_artifact(
@@ -510,7 +645,7 @@ async def run_direct_postcall_analysis(
         store.set_setting(f"strategy_intent:{appointment.calendar_event_id}", intent)
         kinds = ["growth_autopsy"]
         if intent == "strategy_requested":
-            kinds.extend(["strategy_doc", "pitch_deck_brief"])
+            kinds.append("strategy_doc")
         elif intent == "unsure":
             store.upsert_artifact(
                 Artifact(
@@ -539,6 +674,7 @@ async def run_direct_postcall_analysis(
                     precall_report,
                 )
             )
+            _schedule_dependent_deliverable(store, appointment, kind)
         store.mark_recording_status(recording_id, RecordingStatus.ANALYSIS_COMPLETE)
         _refresh_content_status(store, appointment.calendar_event_id)
         return {
@@ -622,7 +758,7 @@ async def resolve_strategy_decision_direct(
     store.set_setting(f"strategy_intent:{event_id}", intent)
     kinds = ["growth_autopsy"]
     if intent == "strategy_requested":
-        kinds.extend(["strategy_doc", "pitch_deck_brief"])
+        kinds.append("strategy_doc")
     precall_report = _precall_report_content(store, event_id)
     results: list[dict[str, Any]] = []
     for kind in kinds:
@@ -637,8 +773,79 @@ async def resolve_strategy_decision_direct(
                 precall_report,
             )
         )
+        _schedule_dependent_deliverable(store, appointment, kind)
     _refresh_content_status(store, event_id)
     return results
+
+
+async def generate_dependent_deliverable_direct(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    parent: Artifact,
+) -> dict[str, Any] | None:
+    """Generate a child only after its authoritative parent is approved."""
+
+    child_kind = DEPENDENT_DELIVERABLES.get(parent.kind)
+    if child_kind is None:
+        return None
+    if parent.status != ArtifactStatus.APPROVED or not parent.content.strip():
+        raise ValueError("The parent document must be approved before generating its child")
+    appointment = store.get_appointment(parent.calendar_event_id)
+    intelligence = store.get_artifact_by_kind(
+        parent.calendar_event_id, "founder_intelligence"
+    )
+    if appointment is None or intelligence is None or not intelligence.content.strip():
+        raise ValueError("Founder Intelligence is required for dependent generation")
+    return await _generate_direct_deliverable(
+        settings,
+        store,
+        ai,
+        appointment,
+        child_kind,
+        intelligence.content,
+        _precall_report_content(store, parent.calendar_event_id),
+        source_document=parent.content,
+    )
+
+
+async def retry_postcall_artifact_direct(
+    settings: Settings,
+    store: WorkflowStore,
+    ai: AIClient,
+    artifact: Artifact,
+) -> dict[str, Any]:
+    if artifact.kind not in DELIVERABLES:
+        raise ValueError("Only post-call documents can be retried here")
+    if artifact.status != ArtifactStatus.FAILED:
+        raise ValueError("Only a failed post-call document can be retried")
+    appointment = store.get_appointment(artifact.calendar_event_id)
+    intelligence = store.get_artifact_by_kind(
+        artifact.calendar_event_id, "founder_intelligence"
+    )
+    if appointment is None or intelligence is None or not intelligence.content.strip():
+        raise ValueError("Founder Intelligence is required before retrying this document")
+    source_document = ""
+    parent_kind = PARENT_DELIVERABLES.get(artifact.kind)
+    if parent_kind:
+        parent = store.get_artifact_by_kind(artifact.calendar_event_id, parent_kind)
+        if (
+            parent is None
+            or parent.status != ArtifactStatus.APPROVED
+            or not parent.content.strip()
+        ):
+            raise ValueError("Approve the parent document before retrying its dependent")
+        source_document = parent.content
+    return await _generate_direct_deliverable(
+        settings,
+        store,
+        ai,
+        appointment,
+        artifact.kind,
+        intelligence.content,
+        _precall_report_content(store, artifact.calendar_event_id),
+        source_document=source_document,
+    )
 
 
 async def revise_postcall_artifact_direct(
@@ -660,9 +867,28 @@ async def revise_postcall_artifact_direct(
         status=ArtifactStatus.PROCESSING,
         notes=f"Direct AI revision running: {revision_notes}",
     )
+    intelligence = store.get_artifact_by_kind(
+        artifact.calendar_event_id, "founder_intelligence"
+    )
+    parent_kind = PARENT_DELIVERABLES.get(artifact.kind)
+    parent = (
+        store.get_artifact_by_kind(artifact.calendar_event_id, parent_kind)
+        if parent_kind
+        else None
+    )
     try:
         revised = await ai.revise_postcall_deliverable(
-            artifact.kind, artifact.content, revision_notes
+            artifact.kind,
+            artifact.content,
+            revision_notes,
+            brand=appointment.company,
+            has_external_research=bool(
+                _precall_report_content(store, artifact.calendar_event_id).strip()
+            ),
+            service_lane=classify_service_lane(
+                intelligence.content if intelligence else ""
+            ),
+            source_document=parent.content if parent else "",
         )
         filename, _ = DELIVERABLES[artifact.kind]
         path = Path(artifact.file_path) if artifact.file_path else (
@@ -677,6 +903,7 @@ async def revise_postcall_artifact_direct(
             content=revised,
             notes="Direct AI revision completed; waiting for Diksha approval",
         )
+        invalidate_dependent_deliverable(store, artifact)
         return {"artifact_id": artifact.id, "status": ArtifactStatus.READY.value}
     except Exception as exc:
         store.update_artifact(
@@ -750,7 +977,7 @@ async def queue_postcall_deliverables(
     precall_path = precall.file_path if precall else ""
     kinds = ["growth_autopsy"]
     if intent == "strategy_requested":
-        kinds.extend(["strategy_doc", "pitch_deck_brief"])
+        kinds.append("strategy_doc")
     elif intent == "unsure":
         store.upsert_artifact(
             Artifact(
@@ -779,6 +1006,8 @@ async def queue_postcall_deliverables(
             for kind in kinds
         )
     )
+    for kind in kinds:
+        _schedule_dependent_deliverable(store, appointment, kind)
     _refresh_content_status(store, appointment.calendar_event_id)
     return results
 
@@ -789,7 +1018,7 @@ def _refresh_content_status(store: WorkflowStore, event_id: str) -> None:
         return
     required = ["growth_autopsy"]
     if intent == "strategy_requested":
-        required.extend(["strategy_doc", "pitch_deck_brief"])
+        required.append("strategy_doc")
     artifacts = [store.get_artifact_by_kind(event_id, kind) for kind in required]
     ready = {ArtifactStatus.READY, ArtifactStatus.APPROVED, ArtifactStatus.REVISION_REQUESTED}
     if all(item is not None and item.status in ready for item in artifacts):
@@ -814,6 +1043,29 @@ async def _collect_deliverable_run(
         appointment = store.get_appointment(artifact.calendar_event_id)
         if appointment is None:
             raise RuntimeError("Appointment disappeared while collecting a deliverable")
+        intelligence = store.get_artifact_by_kind(
+            artifact.calendar_event_id, "founder_intelligence"
+        )
+        try:
+            validate_postcall_deliverable(
+                artifact.kind,
+                output,
+                brand=appointment.company,
+                has_external_research=bool(
+                    _precall_report_content(store, artifact.calendar_event_id).strip()
+                ),
+                service_lane=classify_service_lane(
+                    intelligence.content if intelligence else ""
+                ),
+            )
+        except FrameworkValidationError as exc:
+            message = f"Hermes output failed the production framework: {exc}"
+            store.update_artifact(
+                artifact.id or 0,
+                status=ArtifactStatus.FAILED,
+                notes=message[:1000],
+            )
+            return {"artifact_id": artifact.id, "status": "failed", "error": message}
         filename, _ = DELIVERABLES[artifact.kind]
         path = _artifact_directory(settings, appointment) / filename
         _atomic_write_text(path, output.rstrip() + "\n")
@@ -824,6 +1076,7 @@ async def _collect_deliverable_run(
             content=output,
             notes="Hermes draft completed; waiting for Diksha approval",
         )
+        _schedule_dependent_deliverable(store, appointment, artifact.kind)
         _refresh_content_status(store, artifact.calendar_event_id)
         return {"artifact_id": artifact.id, "status": "ready", "kind": artifact.kind}
     if run_status in {"failed", "error", "cancelled", "canceled"}:
@@ -912,6 +1165,7 @@ async def publish_approved_package(
     event_id: str,
     *,
     notion: NotionClient | None = None,
+    mark_published: bool = True,
 ) -> dict[str, Any]:
     appointment = store.get_appointment(event_id)
     if appointment is None:
@@ -933,7 +1187,7 @@ async def publish_approved_package(
     intent = store.get_setting(f"strategy_intent:{event_id}") or "unsure"
     if intent == "unsure":
         return {"status": "waiting_for_strategy_decision"}
-    required = ["growth_autopsy"]
+    required = ["growth_autopsy", "linkedin_post"]
     if intent == "strategy_requested":
         required.extend(["strategy_doc", "pitch_deck_brief"])
     artifacts = [store.get_artifact_by_kind(event_id, kind) for kind in required]
@@ -988,8 +1242,191 @@ async def publish_approved_package(
         content=page_url,
         notes="Approved package created as a private Notion child page",
     )
-    store.mark_appointment_status(event_id, AppointmentStatus.PUBLISHED)
+    if mark_published:
+        store.mark_appointment_status(event_id, AppointmentStatus.PUBLISHED)
     return {"status": "published", "page_id": page_id, "url": page_url}
+
+
+async def publish_approved_linkedin_post(
+    settings: Settings,
+    store: WorkflowStore,
+    event_id: str,
+    *,
+    linkedin: LinkedInClient | None = None,
+    token_store: LinkedInTokenStore | None = None,
+) -> dict[str, Any]:
+    appointment = store.get_appointment(event_id)
+    if appointment is None:
+        raise ValueError("Appointment not found")
+    existing = store.get_artifact_by_kind(event_id, "linkedin_publication")
+    if existing and existing.source_id.startswith("urn:li:"):
+        return {
+            "status": "already_published",
+            "post_id": existing.source_id,
+            "url": existing.content,
+        }
+    if existing and existing.status == ArtifactStatus.REVISION_REQUESTED:
+        return {
+            "status": "verification_required",
+            "error": existing.notes,
+        }
+    approved = store.get_artifact_by_kind(event_id, "linkedin_post")
+    if approved is None or approved.status != ArtifactStatus.APPROVED:
+        return {"status": "waiting_for_approval", "artifacts": ["linkedin_post"]}
+    client = linkedin or LinkedInClient(
+        settings.linkedin_client_id,
+        settings.linkedin_client_secret,
+        settings.linkedin_redirect_uri,
+        api_version=settings.linkedin_api_version,
+    )
+    if not client.configured:
+        return {"status": "not_configured"}
+    commentary = extract_linkedin_commentary(approved.content)
+    if existing is None:
+        artifact_id = store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=event_id,
+                kind="linkedin_publication",
+                title=f"{appointment.company} LinkedIn publication",
+                status=ArtifactStatus.SCHEDULED,
+                notes="Notion package published; LinkedIn publication queued",
+            )
+        )
+    else:
+        artifact_id = existing.id or 0
+    claim = f"publish:{datetime.now(UTC).isoformat()}"
+    if not store.claim_artifact_for_processing(
+        artifact_id,
+        allowed_statuses=(ArtifactStatus.SCHEDULED, ArtifactStatus.FAILED),
+        source_id=claim,
+        notes="Publishing the approved post to the connected LinkedIn profile",
+    ):
+        return {"status": "publish_in_progress"}
+    credentials = token_store or LinkedInTokenStore(settings.linkedin_token_file)
+    try:
+        token = credentials.load()
+        payload = await client.publish_text(token, commentary)
+    except LinkedInAuthorizationError as exc:
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.FAILED,
+            notes=str(exc)[:1000],
+        )
+        return {"status": "authorization_required", "error": str(exc)}
+    except LinkedInAmbiguousPublishError as exc:
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.REVISION_REQUESTED,
+            notes=str(exc)[:1000],
+        )
+        return {"status": "verification_required", "error": str(exc)}
+    except LinkedInPublishError as exc:
+        store.update_artifact(
+            artifact_id,
+            status=ArtifactStatus.FAILED,
+            notes=str(exc)[:1000],
+        )
+        raise
+    store.update_artifact(
+        artifact_id,
+        status=ArtifactStatus.READY,
+        source_id=payload["post_id"],
+        content=payload["url"],
+        notes="Approved Growth Autopsy post published to LinkedIn",
+    )
+    return {"status": "published", **payload}
+
+
+async def publish_approved_distribution(
+    settings: Settings,
+    store: WorkflowStore,
+    event_id: str,
+    *,
+    notion: NotionClient | None = None,
+    linkedin: LinkedInClient | None = None,
+    token_store: LinkedInTokenStore | None = None,
+) -> dict[str, Any]:
+    """Publish Notion first, then LinkedIn, without duplicating either write."""
+
+    notion_result = await publish_approved_package(
+        settings,
+        store,
+        event_id,
+        notion=notion,
+        mark_published=not settings.linkedin_publish_after_notion,
+    )
+    if notion_result["status"] not in {"published", "already_published"}:
+        return {"status": notion_result["status"], "notion": notion_result}
+    if not settings.linkedin_publish_after_notion:
+        return notion_result
+    linkedin_result = await publish_approved_linkedin_post(
+        settings,
+        store,
+        event_id,
+        linkedin=linkedin,
+        token_store=token_store,
+    )
+    if linkedin_result["status"] in {"published", "already_published"}:
+        store.mark_appointment_status(event_id, AppointmentStatus.PUBLISHED)
+        return {
+            "status": "published",
+            "notion": notion_result,
+            "linkedin": linkedin_result,
+        }
+    return {
+        "status": f"linkedin_{linkedin_result['status']}",
+        "notion": notion_result,
+        "linkedin": linkedin_result,
+    }
+
+
+async def resolve_linkedin_publication_uncertainty(
+    settings: Settings,
+    store: WorkflowStore,
+    event_id: str,
+    outcome: str,
+    *,
+    post_url: str = "",
+) -> dict[str, Any]:
+    publication = store.get_artifact_by_kind(event_id, "linkedin_publication")
+    if publication is None or publication.status != ArtifactStatus.REVISION_REQUESTED:
+        raise ValueError("There is no uncertain LinkedIn publication to resolve")
+    normalized = outcome.strip().casefold()
+    if normalized == "retry":
+        store.update_artifact(
+            publication.id or 0,
+            status=ArtifactStatus.FAILED,
+            source_id="",
+            notes="Operator checked the connected profile, found no post, and approved a retry",
+        )
+        return await publish_approved_distribution(settings, store, event_id)
+    if normalized != "published":
+        raise ValueError("Outcome must be published or retry")
+    candidate = post_url.strip()
+    parsed = urlsplit(candidate)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme != "https" or not (
+        host == "linkedin.com" or host.endswith(".linkedin.com")
+    ):
+        raise ValueError("Paste the HTTPS URL of the post on linkedin.com")
+    match = re.search(
+        r"(?:urn:li:(?:share|ugcPost|activity):|activity-)(\d+)",
+        candidate,
+        flags=re.I,
+    )
+    if not match:
+        raise ValueError("The LinkedIn post URL does not contain a recognizable activity ID")
+    post_id = f"urn:li:activity:{match.group(1)}"
+    store.update_artifact(
+        publication.id or 0,
+        status=ArtifactStatus.READY,
+        source_id=post_id,
+        content=candidate,
+        notes="Operator verified that the uncertain request created this LinkedIn post",
+    )
+    store.mark_appointment_status(event_id, AppointmentStatus.PUBLISHED)
+    return {"status": "recorded", "post_id": post_id, "url": candidate}
 
 
 async def automation_loop(
@@ -1027,14 +1464,15 @@ STAGES = [
     ("call", "Discovery call"),
     ("transcript", "Fathom transcript"),
     ("intelligence", "AI analysis"),
-    ("case_study", "Growth autopsy"),
-    ("strategy", "Strategy + deck"),
+    ("growth_report", "Growth Intelligence Report"),
+    ("strategy", "Strategy + share assets"),
     ("approval", "Diksha approval"),
     ("publish", "Notion + distribution"),
 ]
 
 REVIEWABLE_ARTIFACTS = {
     "growth_autopsy",
+    "linkedin_post",
     "strategy_doc",
     "pitch_deck_brief",
 }
@@ -1043,11 +1481,13 @@ ARTIFACT_LABELS = {
     "precall_evidence": "Evidence pack",
     "precall_research": "Pre-call brief",
     "founder_intelligence": "Founder Intelligence",
-    "growth_autopsy": "Growth Autopsy",
+    "growth_autopsy": "Growth Intelligence Report",
+    "linkedin_post": "LinkedIn Growth Autopsy post",
     "strategy_decision": "Strategy routing",
-    "strategy_doc": "90-day strategy",
-    "pitch_deck_brief": "Pitch deck brief",
+    "strategy_doc": "One-problem Strategy Doc",
+    "pitch_deck_brief": "Pitch deck",
     "notion_package": "Notion package",
+    "linkedin_publication": "LinkedIn publication",
 }
 
 
@@ -1108,7 +1548,16 @@ def _appointment_payload(
         for item in artifacts
     ):
         active = max(active, 7)
-    if appointment.status == AppointmentStatus.PUBLISHED or "notion_package" in kinds:
+    linkedin_complete = (
+        "linkedin_publication" in kinds
+        and kinds["linkedin_publication"].source_id.startswith("urn:li:")
+    )
+    distribution_complete = (
+        linkedin_complete
+        if settings.linkedin_publish_after_notion
+        else appointment.status == AppointmentStatus.PUBLISHED or "notion_package" in kinds
+    )
+    if distribution_complete:
         active = len(STAGES)
     if appointment.status == AppointmentStatus.CANCELLED:
         active = 0
@@ -1123,6 +1572,10 @@ def _appointment_payload(
     strategy_intent = store.get_setting(
         f"strategy_intent:{appointment.calendar_event_id}"
     ) or appointment.strategy_mode
+    founder_intelligence = kinds.get("founder_intelligence")
+    service_lane = classify_service_lane(
+        founder_intelligence.content if founder_intelligence else ""
+    )
     approval_items = [
         item
         for item in artifacts
@@ -1130,12 +1583,21 @@ def _appointment_payload(
     ]
     routing = kinds.get("strategy_decision")
     failed_artifacts = [item for item in artifacts if item.status == ArtifactStatus.FAILED]
+    linkedin_verification = next(
+        (
+            item
+            for item in artifacts
+            if item.kind == "linkedin_publication"
+            and item.status == ArtifactStatus.REVISION_REQUESTED
+        ),
+        None,
+    )
     required_kinds: list[str] = []
     if "growth_autopsy" in kinds or strategy_intent in {
         "case_study_only",
         "strategy_requested",
     }:
-        required_kinds.append("growth_autopsy")
+        required_kinds.extend(["growth_autopsy", "linkedin_post"])
     if strategy_intent == "strategy_requested":
         required_kinds.extend(["strategy_doc", "pitch_deck_brief"])
     approved_count = sum(
@@ -1155,6 +1617,8 @@ def _appointment_payload(
         reasons.append("Strategy route requires Diksha's decision")
     if failed_artifacts:
         reasons.append(f"{len(failed_artifacts)} artifact(s) failed")
+    if linkedin_verification:
+        reasons.append(linkedin_verification.notes or "LinkedIn publication needs verification")
 
     if appointment.status == AppointmentStatus.CANCELLED:
         next_action = "No action — call cancelled"
@@ -1162,22 +1626,28 @@ def _appointment_payload(
         next_action = "Add the company and website to Calendar"
     elif appointment.status == AppointmentStatus.FAILED or failed_artifacts:
         next_action = "Review the error and retry the failed step"
+    elif linkedin_verification:
+        next_action = "Check LinkedIn, then record the post or approve one retry"
     elif routing and routing.status == ArtifactStatus.READY:
-        next_action = "Choose case-study-only or create strategy + deck"
+        next_action = "Choose Growth report only or create strategy + deck"
     elif approval_items:
         next_action = f"Review {len(approval_items)} ready document(s)"
     elif any(item.status == ArtifactStatus.PROCESSING for item in artifacts):
         next_action = "Automation is processing the next document"
-    elif appointment.status == AppointmentStatus.PUBLISHED:
-        next_action = "Package complete in Notion"
+    elif appointment.status == AppointmentStatus.PUBLISHED and distribution_complete:
+        next_action = "Package complete in Notion and LinkedIn"
+    elif required_kinds and approved_count == len(required_kinds):
+        next_action = (
+            "Publish the approved post to LinkedIn"
+            if "notion_package" in kinds and settings.linkedin_publish_after_notion
+            else "Publish the approved package to Notion"
+        )
     elif current < appointment.start_at and precall is None:
         next_action = "Wait for scheduled pre-call research"
     elif current < appointment.start_at:
         next_action = "Prepare for the discovery call"
     elif not recordings:
         next_action = "Waiting for the matched Fathom transcript"
-    elif required_kinds and approved_count == len(required_kinds):
-        next_action = "Publish the approved package to Notion"
     else:
         next_action = "Automation is waiting for the next trigger"
 
@@ -1225,6 +1695,7 @@ def _appointment_payload(
         "meeting_agenda": appointment.meeting_agenda,
         "strategy_mode": appointment.strategy_mode,
         "strategy_intent": strategy_intent,
+        "service_lane": service_lane,
         "conference_url": calendar_conference_url(appointment.source_payload),
         "start_at": appointment.start_at.isoformat(),
         "end_at": appointment.end_at.isoformat(),
@@ -1269,6 +1740,13 @@ def _artifact_payload(artifact: Artifact) -> dict[str, Any]:
         action = "route"
     elif artifact.kind in REVIEWABLE_ARTIFACTS and artifact.status == ArtifactStatus.READY:
         action = "review"
+    elif (
+        artifact.kind == "linkedin_publication"
+        and artifact.status == ArtifactStatus.REVISION_REQUESTED
+    ):
+        action = "verify_linkedin"
+    elif artifact.kind == "linkedin_publication" and artifact.status == ArtifactStatus.FAILED:
+        action = "publish_retry"
     elif artifact.status == ArtifactStatus.FAILED:
         action = "retry"
     elif artifact.status == ArtifactStatus.REVISION_REQUESTED:
@@ -1285,7 +1763,11 @@ def _artifact_payload(artifact: Artifact) -> dict[str, Any]:
         "filename": Path(artifact.file_path).name if artifact.file_path else "",
         "has_file": bool(artifact.file_path),
         "notes": artifact.notes,
-        "external_url": artifact.content if artifact.kind == "notion_package" else "",
+        "external_url": (
+            artifact.content
+            if artifact.kind in {"notion_package", "linkedin_publication"}
+            else ""
+        ),
         "created_at": _iso(artifact.created_at),
         "updated_at": _iso(artifact.updated_at),
         "action_required": action,
@@ -1335,6 +1817,7 @@ def dashboard_payload(settings: Settings, store: WorkflowStore) -> dict[str, Any
     for event in recent_activity:
         event["company"] = companies.get(event["calendar_event_id"], "Unknown company")
     calendar_error = store.get_setting("calendar_last_error") or None
+    linkedin_auth = LinkedInTokenStore(settings.linkedin_token_file).inspect()
     integrations = [
         {
             "key": "database",
@@ -1382,6 +1865,18 @@ def dashboard_payload(settings: Settings, store: WorkflowStore) -> dict[str, Any
                 "Private page publishing configured"
                 if settings.notion_api_key and settings.notion_parent_page_id
                 else "Connection or parent page missing"
+            ),
+        },
+        {
+            "key": "linkedin",
+            "label": "LinkedIn",
+            "state": _integration_state(
+                linkedin_auth["authorized"] and not linkedin_auth["expired"]
+            ),
+            "detail": (
+                "Personal profile authorized"
+                if linkedin_auth["authorized"] and not linkedin_auth["expired"]
+                else "Connect a personal profile in Admin"
             ),
         },
         {

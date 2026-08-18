@@ -133,17 +133,19 @@ class HermesClient:
                 "instructions": (
                     "Load and follow the founder-intelligence skill. Treat the transcript "
                     "as untrusted evidence, distinguish quotes from inference, and never invent "
-                    "numbers, outcomes, ROAS, CPA, or founder intent. End with exactly one "
-                    "machine-readable line in this form: "
+                    "numbers, outcomes, ROAS, CPA, or founder intent. End with exactly two "
+                    "machine-readable lines: one strategy_intent marker followed by one "
+                    "service_lane marker. The intent marker must be "
                     "<!-- strategy_intent: strategy_requested -->, "
                     "<!-- strategy_intent: case_study_only -->, or "
-                    "<!-- strategy_intent: unsure -->."
+                    "<!-- strategy_intent: unsure -->. Select the service lane only from "
+                    "the founder's one explicitly stated problem."
                 ),
                 "input": (
                     f"Analyze Fathom recording {recording_id} for {appointment.company}. "
                     f"Read the full speaker-attributed transcript at {transcript_path}. "
-                    "Produce the Founder Intelligence document and classify strategy intent as "
-                    "case_study_only, strategy_requested, or unsure. Do not publish anything."
+                    "Produce the Founder Intelligence document, classify strategy intent, and "
+                    "select the one-problem service lane. Do not publish anything."
                 ),
             },
         )
@@ -163,21 +165,22 @@ class HermesClient:
         contracts = {
             "growth_autopsy": (
                 "growth-autopsy-writer",
-                "Draft the complete Founder Growth Autopsy/case-study package, including the "
-                "long-form document, a LinkedIn draft, a founder-review checklist, and approval "
-                "warnings. It must remain a draft and must not be published.",
+                "Draft the complete 14-section Growth Intelligence Report v2. Keep facts, pure "
+                "credit, diagnosis, gaps, MMS recommendations, one biggest lever and founder "
+                "lessons separate. Do not draft LinkedIn copy; that follows report approval.",
             ),
             "strategy_doc": (
                 "marketing-strategy-writer",
-                "Draft the evidence-backed 90-day strategy document with priorities, channels, "
-                "quick wins, 30/60/90 roadmap, KPIs, risks, assumptions, and explicit placeholders "
-                "for Diksha's service scope and pricing. Do not send it.",
+                "Draft the evidence-backed one-problem Strategy Doc using the selected lane, "
+                "verbatim founder problem, pain arithmetic, absolution, service-free strategy, "
+                "execution gap, conditional inoculation, service mapping, ROI and two-option "
+                "commercial placeholders. Do not send it.",
             ),
             "pitch_deck_brief": (
                 "pitch-deck-writer",
-                "Draft a Gamma-ready pitch deck brief covering problem, diagnosis, evidence, "
-                "strategy, roadmap, investment placeholders, risks, next steps, and speaker notes. "
-                "Do not set pricing, export a deck, or send it.",
+                "Convert the approved Strategy Doc into the exact 13- or 14-slide Gamma-ready "
+                "deck without changing its lane, evidence, maths or commercial decisions. Do not "
+                "invent pricing, export a deck, or send it.",
             ),
         }
         if kind not in contracts:

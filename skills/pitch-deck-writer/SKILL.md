@@ -1,9 +1,9 @@
 ---
 name: pitch-deck-writer
-description: Draft grounded Gamma-ready pitch deck briefs.
+description: Convert an approved one-problem Strategy Doc into the exact 13- or 14-slide Gamma-ready pitch deck without changing its lane, evidence, maths, or commercial decisions.
 license: MIT
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   author: Jai and Hermes Agent
   hermes:
     tags: [pitch, deck, gamma, strategy]
@@ -12,8 +12,8 @@ metadata:
 
 # Pitch Deck Writer Skill
 
-Create an evidence-grounded, Gamma-ready pitch deck brief for Diksha's review.
-The result is a Markdown brief—not a sent proposal or an exported deck.
+Create an evidence-grounded, Gamma-ready pitch deck for Diksha's review.
+The result is deck-ready Markdown—not a sent proposal or an exported file.
 
 ## When to Use
 
@@ -22,32 +22,33 @@ overrides an `unsure` decision. Never run it for a case-study-only call.
 
 ## Prerequisites
 
-- Founder Intelligence document
-- Pre-call evidence/report when available
-- Confirmed strategy-intent decision
+- Approved Strategy Doc
+- Confirmed service lane
+- Approved commercial inputs or explicit Diksha placeholders
 
 Read `references/deck-output-contract.md` before drafting.
 
 ## Procedure
 
-1. State the founder's goal and current situation without exaggeration.
-2. Turn evidence into one coherent diagnosis and strategic thesis.
-3. Structure a concise slide sequence with one message per slide.
-4. Include a practical 30/60/90 roadmap and measurement plan.
-5. Use `Diksha input required` for scope, package, price, terms, or missing facts.
-6. Add concise speaker notes and evidence references for each slide.
-7. End with risks, assumptions, next steps, and an approval checklist.
-8. Mark the document `DRAFT — NOT APPROVED OR SENT`.
+1. Read the approved Strategy Doc completely; treat it as authoritative.
+2. Preserve its exact founder quote, one problem, selected lane and maths.
+3. Map its sections to the slide sequence in the reference contract.
+4. Keep strategy and service reveal on separate slides.
+5. Give the gut-punch question its own slide.
+6. Include inoculation only for paid-media lanes.
+7. Add concise speaker notes and evidence/source to every slide.
+8. Keep price on the final slide and use placeholders where unapproved.
 
 ## Pitfalls
 
 - Never invent results, baselines, budgets, pricing, testimonials, or urgency.
 - Never turn estimates into client analytics.
 - Never promise revenue or fixed growth outcomes.
+- Never re-diagnose sources or introduce a new service.
 - Never claim Gamma export or delivery occurred.
 
 ## Verification
 
-Verify every factual slide against the supplied evidence, keep pricing as a
-placeholder, ensure the roadmap matches the strategy, and leave the deck at the
-Diksha approval gate.
+Verify 14 sequential slides for paid media or 13 for secondary lanes, all five
+slide fields, strategy before vehicle, pricing on the final slide only, exactly two
+options, and the locked-date close.

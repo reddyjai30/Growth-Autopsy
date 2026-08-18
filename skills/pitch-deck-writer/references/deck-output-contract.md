@@ -1,18 +1,26 @@
-# Pitch deck brief output contract
+# Pitch deck output contract
 
-Use this order:
+Every slide is an H2 `Slide N · Title`. Paid-media decks have 14 slides;
+secondary-lane decks have 13 and omit inoculation.
 
-1. Draft status
-2. Deck title and single-sentence narrative
-3. Slide-by-slide outline
-4. Evidence and source ledger
-5. Diksha commercial input fields
-6. Approval checklist
+1. Cover — brand + exact quote
+2. Surface, compounding and invisible cost
+3. Gut-punch question only
+4. Absolution
+5. Pattern authority
+6. What the founder's week looks like
+7. Today / Day 90
+8. Service-free strategy phases
+9. Honest DIY maths
+10. Paid-media inoculation only
+10 secondary / 11 paid. Vehicle reveal and mappings
+11 secondary / 12 paid. Why us, why now
+12 secondary / 13 paid. ROI bridge
+13 secondary / 14 paid. Investment, two options, price last, locked date
 
 For every slide include:
 
 ```text
-Slide number and title:
 Core message:
 On-slide copy:
 Suggested visual:
@@ -20,6 +28,6 @@ Evidence/source:
 Speaker notes:
 ```
 
-Recommended slide sequence: context, founder goal, problem, diagnosis, evidence,
-opportunity, strategic thesis, priorities, 30/60/90 roadmap, measurement, service
-scope placeholder, investment placeholder, risks, and next step.
+Slide 3 On-slide copy contains one number and one question only. A numeric price
+may appear only on the final slide. Use `[DIKSHA INPUT REQUIRED]` for any unapproved
+commercial value.

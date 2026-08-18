@@ -1,19 +1,19 @@
 ---
 name: growth-autopsy-writer
-description: Draft public-safe founder growth diagnostics.
+description: Draft the 14-section Growth Intelligence Report v2 from approved founder evidence while keeping facts, credit, diagnosis, gaps, MMS advice, and share lessons separate.
 license: MIT
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   author: Jai and Hermes Agent
   hermes:
-    tags: [case-study, linkedin, founder, content]
+    tags: [growth-autopsy, founder, report, content]
     category: creative
 ---
 
 # Growth Autopsy Writer Skill
 
-Draft an evidence-grounded Founder Growth Autopsy for Diksha's review. Treat it
-as a diagnostic—not a results case study—unless documented outcomes already exist.
+Draft an evidence-grounded, founder-facing Growth Intelligence Report for Diksha's
+review. It must feel like deep understanding, never an audit.
 
 ## When to Use
 
@@ -31,45 +31,42 @@ Read `references/public-output-contract.md` before writing.
 
 ## How to Run
 
-Read all supplied evidence completely. Draft the long-form Growth Autopsy first,
-then derive LinkedIn copy from the same approved claim set. Do not send, publish,
-or create a founder-facing document without an explicit downstream approval step.
+Read all supplied evidence completely. Draft only the long-form report. LinkedIn
+copy is a downstream artifact derived after this report is approved. Do not send
+or publish anything.
 
 ## Quick Reference
 
-Required narrative:
+Required separation:
 
 ```text
-Problem → Diagnosis → Evidence → Opportunities → Strategy hypothesis → Expected impact
+Facts → Pure credit → Diagnosis → Gaps → MMS advice → Share layer
 ```
 
 Expected impact must be a hypothesis or measurement plan, never a guaranteed result.
 
 ## Procedure
 
-1. Build an allowed-claims list from the supplied evidence and sensitivity labels.
-2. Remove confidential numbers, personal details, and unapproved quotations.
-3. Choose one coherent growth problem rather than summarizing the entire call.
-4. Explain the diagnosis in plain language with cited public evidence.
-5. Present opportunities as prioritized hypotheses.
-6. Describe strategy at a useful level without revealing private commercial terms.
-7. Define expected impact through leading indicators and validation steps.
-8. Draft a LinkedIn post with a strong hook, useful insight, Mosaic point of view,
-   and consent-safe CTA.
-9. Add a founder review note listing every claim that needs confirmation.
-10. Mark the entire package `DRAFT — NOT APPROVED FOR PUBLICATION`.
+1. Build an allowed-claims list using Founder Fact, Observation and MMS Interpretation.
+2. Remove restricted numbers, personal details and unapproved quotations.
+3. Write Parts A–E using the exact reference contract.
+4. Keep Growth OS factual; move diagnosis to Section 8 and gaps to Section 9.
+5. Make Section 7 pure earned praise with no contrast language.
+6. Trace every Section 11 recommendation through Observation → Evidence → Impact → Unlock.
+7. Select exactly one 90-day lever and 3–5 transferable founder lessons.
+8. Run the quality checks before returning the complete Markdown.
 
 ## Pitfalls
 
-- Do not call it a case study when no implemented results exist.
+- Never use the phrase “case study” inside the document.
 - Do not manufacture before/after outcomes, quotes, numbers, or attribution.
 - Do not publicly reveal founder problems merely because they appear in a transcript.
 - Do not make the founder look incompetent or use humiliating “autopsy” language.
-- Do not publish after Diksha's approval alone; founder consent is a separate gate.
+- Do not draft the LinkedIn post before the report is approved.
 - Do not let stylistic confidence exceed evidentiary confidence.
 
 ## Verification
 
 Verify every public claim against the allowed-claims list, remove restricted data,
-label hypotheses, include the two approval gates, and ensure no publishing or email
-action was performed.
+label interpretations, keep Section 7 critique-free, trace every MMS recommendation,
+and ensure no publishing or email action was performed.

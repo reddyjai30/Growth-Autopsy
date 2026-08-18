@@ -1,0 +1,27 @@
+[Unit]
+Description=Growth Autopsy automation service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/growth-autopsy
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/growth-autopsy/.playwright-browsers
+ExecStart=/opt/growth-autopsy/.venv/bin/growth-autopsy serve --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
