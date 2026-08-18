@@ -1,4 +1,4 @@
 interface:
   display_name: "Growth Autopsy Writer"
-  short_description: "Draft a founder growth diagnostic from evidence"
-  default_prompt: "Draft a public-safe founder growth autopsy from the approved evidence and transcript."
+  short_description: "Draft the 14-section Growth Intelligence Report v2"
+  default_prompt: "Draft the evidence-grounded Growth Intelligence Report v2 with facts, pure credit, diagnosis, gaps, MMS advice, one lever, and founder lessons kept separate."

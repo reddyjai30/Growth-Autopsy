@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#102c22" />
+    <title>Growth Autopsy — Admin Console</title>
+    <link rel="stylesheet" href="/admin/admin.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Growth Autopsy pipeline">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Growth Autopsy</strong><small>Workspace administration</small></span>
+      </a>
+      <nav class="product-nav" aria-label="Product navigation">
+        <a href="/"><span aria-hidden="true">⌘</span> Pipeline</a>
+        <a class="active" href="/admin/" aria-current="page"><span aria-hidden="true">⚙</span> Admin</a>
+        <a href="/logout"><span aria-hidden="true">↪</span> Sign out</a>
+      </nav>
+      <span class="local-state"><i></i><span>Protected access</span></span>
+    </header>
+
+    <main class="admin-page">
+      <section class="hero">
+        <div>
+          <span class="eyebrow">System console</span>
+          <h1>Workspace admin</h1>
+          <p>Inspect workflow data and configure this installation from one protected operator console.</p>
+        </div>
+        <div class="safety-flags" aria-label="Admin security status">
+          <span><i class="lock-icon" aria-hidden="true"></i> Operator authentication</span>
+          <span><i class="eye-icon" aria-hidden="true"></i> Database read-only</span>
+        </div>
+      </section>
+
+      <section id="notice" class="notice hidden" role="status" aria-live="polite"></section>
+
+      <div class="section-tabs" role="tablist" aria-label="Admin sections">
+        <button id="databaseTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="databasePanel" data-tab="database">
+          <span class="tab-icon database-icon" aria-hidden="true"></span>
+          <span><strong>Database</strong><small>Browse workflow records</small></span>
+        </button>
+        <button id="configurationTab" type="button" role="tab" aria-selected="false" aria-controls="configurationPanel" data-tab="configuration">
+          <span class="tab-icon sliders-icon" aria-hidden="true"></span>
+          <span><strong>Configuration</strong><small>API keys, services and OAuth</small></span>
+        </button>
+      </div>
+
+      <section id="databasePanel" class="admin-panel" role="tabpanel" aria-labelledby="databaseTab">
+        <div class="database-layout">
+          <aside class="collection-panel">
+            <header>
+              <span class="eyebrow">Collections</span>
+              <strong id="databaseEngine">SQLite</strong>
+              <small id="databasePath">Loading database…</small>
+            </header>
+            <nav id="collectionList" aria-label="Database tables">
+              <div class="sidebar-loader"><i></i><span>Loading collections</span></div>
+            </nav>
+            <footer><span class="readonly-dot"></span> Query-only connection</footer>
+          </aside>
+
+          <section class="records-panel">
+            <header class="records-head">
+              <div>
+                <span class="eyebrow">Active collection</span>
+                <h2 id="collectionTitle">Select a collection</h2>
+                <p id="collectionDescription">Choose a collection to inspect its records.</p>
+              </div>
+              <button id="refreshDatabase" class="icon-button" type="button" aria-label="Refresh records" title="Refresh records">↻</button>
+            </header>
+
+            <div class="records-toolbar">
+              <form id="databaseSearch" class="data-search" role="search">
+                <span aria-hidden="true">⌕</span>
+                <input id="databaseSearchInput" type="search" placeholder="Search every field…" autocomplete="off" />
+                <button id="clearDatabaseSearch" class="hidden" type="button" aria-label="Clear search">×</button>
+              </form>
+              <div id="recordSummary" class="record-summary">—</div>
+            </div>
+
+            <div id="recordsLoading" class="records-loading"><i></i><span>Loading records…</span></div>
+            <div id="recordsEmpty" class="records-empty hidden">
+              <span aria-hidden="true">⌁</span>
+              <h3>No records found</h3>
+              <p>Try a different search or wait for this workflow stage to run.</p>
+            </div>
+            <div id="tableShell" class="data-table-shell hidden">
+              <table class="data-table">
+                <thead id="dataTableHead"></thead>
+                <tbody id="dataTableBody"></tbody>
+              </table>
+            </div>
+            <footer id="pagination" class="pagination hidden">
+              <span id="pageRange">—</span>
+              <div>
+                <button id="previousPage" type="button">← Previous</button>
+                <button id="nextPage" type="button">Next →</button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      </section>
+
+      <section id="configurationPanel" class="admin-panel hidden" role="tabpanel" aria-labelledby="configurationTab">
+        <div id="restartBanner" class="restart-banner hidden">
+          <span aria-hidden="true">↻</span>
+          <div><strong>Restart required</strong><small>Configuration is saved. Restart the running app to activate the new values.</small></div>
+        </div>
+
+        <div class="configuration-intro">
+          <div>
+            <span class="eyebrow">Installation settings</span>
+            <h2>Configuration</h2>
+            <p id="configDescription">Local values are stored in the ignored <code>.env</code> file. Existing secrets are never sent to this browser.</p>
+          </div>
+          <span id="envState" class="file-state">Checking .env…</span>
+        </div>
+
+        <div class="config-layout">
+          <aside id="configNavigation" class="config-navigation" aria-label="Configuration groups"></aside>
+          <div class="config-content">
+            <section id="oauthCard" class="oauth-card">
+              <div class="oauth-heading">
+                <span class="oauth-logo" aria-hidden="true">G</span>
+                <div>
+                  <span class="eyebrow">Google Calendar</span>
+                  <h3>OAuth desktop credentials</h3>
+                  <p>Upload the Desktop app JSON downloaded from Google Cloud. It is saved locally and excluded from Git.</p>
+                </div>
+                <span id="oauthStatus" class="status-badge neutral">Checking</span>
+              </div>
+              <div class="oauth-upload-row">
+                <input id="oauthFile" class="visually-hidden" type="file" accept="application/json,.json" />
+                <label id="oauthFileButton" class="upload-button" for="oauthFile"><span>⇧</span> Upload Google JSON</label>
+                <div><strong id="oauthFilename">No client file uploaded</strong><small id="oauthPath">Expected at ./secrets/google-oauth-client.json</small></div>
+              </div>
+              <div id="oauthCommandBlock" class="command-block hidden">
+                <span>Then authorize Calendar access in Terminal</span>
+                <div><code id="oauthCommand"></code><button id="copyOauthCommand" type="button">Copy</button></div>
+              </div>
+            </section>
+
+            <section id="linkedinOauthCard" class="oauth-card linkedin-oauth-card">
+              <div class="oauth-heading">
+                <span class="oauth-logo linkedin-logo" aria-hidden="true">in</span>
+                <div>
+                  <span class="eyebrow">LinkedIn publishing</span>
+                  <h3>Personal profile authorization</h3>
+                  <p>Connect the profile that will publish approved Growth Autopsy posts. The access token stays in the local secrets directory.</p>
+                </div>
+                <span id="linkedinOauthStatus" class="status-badge neutral">Checking</span>
+              </div>
+              <div class="oauth-upload-row linkedin-connect-row">
+                <button id="linkedinConnect" class="upload-button" type="button">Connect LinkedIn</button>
+                <div><strong id="linkedinOauthSummary">Configure the LinkedIn app first</strong><small id="linkedinTokenPath">Expected at ./secrets/linkedin-token.json</small></div>
+              </div>
+              <div class="oauth-guidance">
+                Register the exact redirect URI shown in the LinkedIn configuration fields, enable Share on LinkedIn, then authorize here.
+              </div>
+            </section>
+
+            <form id="configForm" autocomplete="off">
+              <div id="configGroups" class="config-groups">
+                <div class="config-loader"><i></i><span>Loading configuration…</span></div>
+              </div>
+              <footer id="configSaveBar" class="config-save-bar">
+                <div><strong id="changeCount">No unsaved changes</strong><small>Only changed fields will be written.</small></div>
+                <button id="saveConfiguration" class="primary-button" type="submit" disabled>Save configuration</button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="recordScrim" class="record-scrim hidden"></div>
+    <aside id="recordDrawer" class="record-drawer" aria-hidden="true" aria-label="Database record details">
+      <header><div><span class="eyebrow">Record inspector</span><strong id="recordDrawerTitle">Record</strong></div><button id="closeRecordDrawer" type="button" aria-label="Close record">×</button></header>
+      <div id="recordDrawerBody" class="record-drawer-body"></div>
+    </aside>
+
+    <script src="/admin/admin.js" defer></script>
+  </body>
+</html>

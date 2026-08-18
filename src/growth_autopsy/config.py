@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/growth_autopsy.db")
     shared_workdir: Path = Path("data")
 
+    # Production operator access. These values are intentionally supplied by
+    # the hosting provider rather than written through the admin console.
+    app_username: str = ""
+    app_password: str = ""
+    session_secret: str = ""
+    session_ttl_hours: int = Field(default=12, ge=1, le=168)
+    managed_configuration: bool = False
+
     google_calendar_id: str = "primary"
     google_token_file: Path = Path("secrets/google-token.json")
     calendar_title_prefix: str = "[GROWTH AUTOPSY]"
@@ -96,12 +104,22 @@ class Settings(BaseSettings):
     notion_api_version: str = "2026-03-11"
     notion_publish_after_approval: bool = True
 
+    linkedin_client_id: str = ""
+    linkedin_client_secret: str = ""
+    linkedin_redirect_uri: str = (
+        "http://localhost:8787/internal/linkedin/oauth/callback"
+    )
+    linkedin_token_file: Path = Path("secrets/linkedin-token.json")
+    linkedin_api_version: str = Field(default="202607", pattern=r"^\d{6}$")
+    linkedin_publish_after_notion: bool = False
+
     def resolve_paths(self, base_dir: Path | None = None) -> "Settings":
         base = (base_dir or Path.cwd()).resolve()
         for field_name in (
             "database_path",
             "shared_workdir",
             "google_token_file",
+            "linkedin_token_file",
             "hermes_cron_output_dir",
             "lighthouse_executable",
         ):

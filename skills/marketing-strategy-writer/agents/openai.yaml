@@ -1,4 +1,4 @@
 interface:
   display_name: "Marketing Strategy Writer"
-  short_description: "Draft an evidence-backed 90-day marketing strategy"
-  default_prompt: "Create an evidence-backed 90-day marketing strategy draft for Diksha to edit and price."
+  short_description: "Turn one founder problem into the closing Strategy Doc"
+  default_prompt: "Create the evidence-backed one-problem Strategy Doc with exact words, absolution, standalone strategy, selected service lane, conservative ROI, and Diksha commercial inputs."

@@ -102,7 +102,7 @@ def test_dashboard_exposes_operational_metrics_and_sql_timeline(tmp_path) -> Non
     assert dashboard["metrics"]["awaiting_approval"] == 1
     assert dashboard["metrics"]["routing_decisions"] == 1
     assert workflow["current_stage"]["key"] == "approval"
-    assert workflow["next_action"].startswith("Choose case-study-only")
+    assert workflow["next_action"].startswith("Choose Growth report only")
     assert workflow["recording_count"] == 1
     assert integrations["database"]["state"] == "connected"
     assert integrations["calendar"]["state"] == "configured"
@@ -132,6 +132,63 @@ def test_dashboard_detail_returns_none_for_unknown_workflow(tmp_path) -> None:
         "workflow_events": 0,
         "webhook_deliveries": 0,
     }
+
+
+def test_linkedin_enabled_requires_post_urn_even_for_legacy_published_status(tmp_path) -> None:
+    now = datetime.now(UTC)
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        linkedin_publish_after_notion=True,
+    )
+    store = WorkflowStore(settings.database_path)
+    store.initialize()
+    appointment = _appointment(now - timedelta(days=1))
+    appointment.status = AppointmentStatus.PUBLISHED
+    appointment.strategy_mode = "case_study_only"
+    store.upsert_appointment(appointment)
+    store.set_setting(f"strategy_intent:{appointment.calendar_event_id}", "case_study_only")
+    for kind, status, source_id, content in (
+        ("growth_autopsy", ArtifactStatus.APPROVED, "", "Approved report"),
+        ("linkedin_post", ArtifactStatus.APPROVED, "", "Approved post"),
+        (
+            "notion_package",
+            ArtifactStatus.READY,
+            "notion-page",
+            "https://notion.so/private-page",
+        ),
+    ):
+        store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind=kind,
+                title=kind,
+                status=status,
+                source_id=source_id,
+                content=content,
+            )
+        )
+
+    waiting = appointment_detail_payload(settings, store, appointment.calendar_event_id)
+    assert waiting is not None
+    assert waiting["progress"] < 100
+    assert waiting["next_action"] == "Publish the approved post to LinkedIn"
+
+    store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=appointment.calendar_event_id,
+            kind="linkedin_publication",
+            title="LinkedIn publication",
+            status=ArtifactStatus.READY,
+            source_id="urn:li:share:123",
+            content="https://www.linkedin.com/feed/update/urn:li:share:123/",
+        )
+    )
+    complete = appointment_detail_payload(settings, store, appointment.calendar_event_id)
+    assert complete is not None
+    assert complete["progress"] == 100
 
 
 @pytest.mark.asyncio

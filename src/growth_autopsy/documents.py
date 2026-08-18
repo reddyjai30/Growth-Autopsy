@@ -229,7 +229,7 @@ def render_document_html(
     .section-5-discovery-questions + ol li::before {{ color:#326b89; background:#e5f0f6; }}
     .section-sources + ul, .section-sources + ol {{ padding:14px 18px 14px 36px; border-radius:9px; color:var(--muted); background:var(--soft); font-size:12px; }}
     @page {{ size:A4; margin:18mm 16mm; }}
-    @media print {{ body {{ background:#fff; }} .document-toolbar {{ display:none; }} .page {{ width:auto; min-height:0; margin:0; padding:0; box-shadow:none; }} article h1, article h2, article h3 {{ break-after:avoid; }} article li, article blockquote, table {{ break-inside:avoid; }} }}
+    @media print {{ body {{ background:#fff; }} .document-toolbar {{ display:none; }} .page {{ width:auto; min-height:0; margin:0; padding:0; box-shadow:none; }} article h1, article h2, article h3 {{ break-after:avoid; }} article li, article blockquote, table {{ break-inside:avoid; }} .section-11-what-marketing-mosaic-suggests {{ break-before:page; page-break-before:always; }} }}
     @media (max-width:640px) {{ .document-toolbar {{ padding:0 16px; }} .page {{ width:100%; margin:0; padding:42px 22px; box-shadow:none; }} .document-title {{ font-size:31px; }} }}
   </style>
 </head>

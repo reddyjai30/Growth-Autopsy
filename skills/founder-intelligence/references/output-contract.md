@@ -4,36 +4,44 @@ Use this order:
 
 1. Meeting metadata
 2. Executive summary
-3. Business snapshot
-4. Founder goals
-5. Problems and stated causes
-6. Constraints and objections
-7. Metrics ledger
-8. Current marketing and sales system
-9. Opportunities discussed
-10. Commitments and next steps
-11. Strategy-intent classification
-12. Evidence ledger
-13. Open questions for Diksha
+3. Business and founder evidence
+4. Founder story evidence
+5. The one problem commercial brief — exact founder quote, speaker, timestamp,
+   symptom, consequences, desired outcome and unknowns
+6. Goals, constraints and objections
+7. Metrics and calculation inputs — founder numbers only; missing = Not provided
+8. Growth Operating System evidence — Traffic, Conversion, Retention, Expansion
+9. Six-lens evidence — Psychology, Behaviour, Economics, Attention, Trust, Distribution
+10. Opportunities discussed
+11. Commitments and next steps
+12. Public-safety ledger
+13. Evidence ledger
+14. Open questions for Diksha
+15. Strategy and service-lane classification
 
 For evidence entries use:
 
 ```text
-Speaker:
+Evidence type: Founder Fact | Observation | MMS Interpretation
+Speaker/source:
 Timestamp:
 Statement or concise paraphrase:
-Interpretation:
+Allowed wording:
 Confidence: high | medium | low
-Sensitivity: internal | potentially-public | founder-approval-required
+Sensitivity: public-safe | internal-only | needs-confirmation | exclude
 ```
 
 Never include a verbatim excerpt longer than needed to prove the point.
 
-The final line is required for safe orchestration:
+The final two lines are required for safe orchestration:
 
 ```text
 <!-- strategy_intent: strategy_requested -->
+<!-- service_lane: lead_intelligence -->
 ```
 
-Use `case_study_only` or `unsure` instead when appropriate. Put no content after
-the marker.
+Intent may instead be `case_study_only` or `unsure`. Service lane must be one of
+`meta_acquisition`, `paid_media_rebuild`, `google_intent_capture`, `paid_scaling`,
+`amazon_ads`, `attribution_ads`, `native_meta`, `lead_intelligence`,
+`outbound_appointment_setting`, `linkedin_authority`, `sales_playbook`,
+`shopify_cro_aeo`, or `unsure`. Put no content after the second marker.

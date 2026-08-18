@@ -13,6 +13,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
 const titleCase = (value = "") => String(value).replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const strategyLabel = (value = "") => value === "case_study_only" ? "Growth Report Only" : titleCase(value || "Auto");
 const formatDate = (value) => value ? new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(value)) : "Date pending";
 const formatShortDate = (value) => value ? new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(new Date(value)) : "—";
 const formatTime = (value) => value ? new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit" }).format(new Date(value)) : "—";
@@ -23,10 +24,10 @@ const FULL_PIPELINE = [
   { key: "call", label: "Discovery call", description: "Founder conversation" },
   { key: "transcript", label: "Transcript", description: "Fathom capture" },
   { key: "intelligence", label: "AI analysis", description: "Founder intelligence" },
-  { key: "case_study", label: "Case study", description: "Growth Autopsy" },
-  { key: "strategy", label: "Strategy + deck", description: "90-day plan" },
+  { key: "growth_report", label: "Growth report", description: "Growth Intelligence Report" },
+  { key: "strategy", label: "Strategy + share assets", description: "One-problem route" },
   { key: "approval", label: "Approval", description: "Review and edit" },
-  { key: "publish", label: "Notion", description: "Approved delivery" },
+  { key: "publish", label: "Publish", description: "Notion + LinkedIn" },
 ];
 
 const BOARD_COLUMNS = [
@@ -38,8 +39,10 @@ const DISPLAY_DOCUMENTS = new Set([
   "precall_research",
   "founder_intelligence",
   "growth_autopsy",
+  "linkedin_post",
   "strategy_doc",
   "pitch_deck_brief",
+  "linkedin_publication",
 ]);
 
 function requestHeaders(json = false) {
@@ -51,6 +54,11 @@ async function api(path, options = {}) {
     ...options,
     headers: { ...requestHeaders(Boolean(options.body)), ...(options.headers || {}) },
   });
+  if (response.status === 401) {
+    const next = window.location.pathname + window.location.search;
+    window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+    throw new Error("Your session expired. Sign in again.");
+  }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
     try { message = (await response.json()).detail || message; } catch {}
@@ -75,11 +83,11 @@ function isAnalyzing(item) {
 }
 
 function documentsFor(item) {
-  return item.artifacts.filter((artifact) => DISPLAY_DOCUMENTS.has(artifact.kind) && artifact.has_file);
+  return item.artifacts.filter((artifact) => DISPLAY_DOCUMENTS.has(artifact.kind));
 }
 
 function primaryDocument(item) {
-  const documents = documentsFor(item);
+  const documents = documentsFor(item).filter((artifact) => artifact.has_file);
   return documents.find((artifact) => artifact.kind === "precall_research") || documents[0] || null;
 }
 
@@ -100,7 +108,7 @@ function statusMeta(item) {
   if (requiresAttention(item)) return { label: "Needs attention", tone: "danger" };
   if (item.status === "PUBLISHED") return { label: "Published", tone: "success" };
   if (item.approval.awaiting_review > 0) return { label: "Review needed", tone: "warning" };
-  if (documentsFor(item).length > 0) return { label: "Report ready", tone: "success" };
+  if (documentsFor(item).some((artifact) => artifact.has_file)) return { label: "Report ready", tone: "success" };
   if (item.status === "RESEARCH_SCHEDULED") return { label: "Scheduled", tone: "neutral" };
   return { label: titleCase(item.status), tone: "neutral" };
 }
@@ -309,12 +317,16 @@ function closeDrawer() {
   $("scrim").classList.add("hidden");
 }
 
-function drawerDocument(artifact) {
+function drawerDocument(artifact, eventId) {
   const review = artifact.action_required === "review";
+  const retry = artifact.action_required === "retry";
+  const publishRetry = artifact.action_required === "publish_retry";
+  const verifyLinkedIn = artifact.action_required === "verify_linkedin";
+  const fileActions = `${artifact.has_file ? `<button data-view-document="${artifact.id}">View</button><button data-download="${artifact.id}">PDF</button>` : ""}${artifact.external_url ? `<button data-url="${escapeHtml(artifact.external_url)}">Open ↗</button>` : ""}`;
   return `<article class="drawer-document">
     <span class="document-icon">▤</span>
-    <span class="document-name"><strong>${escapeHtml(artifact.label)}</strong><small>${escapeHtml(titleCase(artifact.status))}</small></span>
-    <span class="document-actions"><button data-view-document="${artifact.id}">View</button><button data-download="${artifact.id}">PDF</button>${review ? `<button class="approve" data-approve="${artifact.id}">Approve</button><button data-revise="${artifact.id}" data-title="${escapeHtml(artifact.label)}">Revise</button>` : ""}</span>
+    <span class="document-name"><strong>${escapeHtml(artifact.label)}</strong><small>${escapeHtml(titleCase(artifact.status))}${artifact.notes ? ` · ${escapeHtml(artifact.notes)}` : ""}</small></span>
+    <span class="document-actions">${fileActions}${review ? `<button class="approve" data-approve="${artifact.id}">Approve</button><button data-revise="${artifact.id}" data-title="${escapeHtml(artifact.label)}">Revise</button>` : ""}${retry ? `<button data-retry="${artifact.id}">Retry</button>` : ""}${publishRetry ? `<button data-publish="${escapeHtml(eventId)}">Retry publish</button>` : ""}${verifyLinkedIn ? `<button data-linkedin-found="${escapeHtml(eventId)}">Record post</button><button data-linkedin-retry="${escapeHtml(eventId)}">No post — retry</button>` : ""}</span>
   </article>`;
 }
 
@@ -335,12 +347,12 @@ function renderDrawer() {
       ${item.website ? `<button class="button secondary small" data-url="${escapeHtml(item.website)}">Website ↗</button>` : ""}
       ${item.conference_url ? `<button class="button secondary small" data-url="${escapeHtml(item.conference_url)}">Google Meet ↗</button>` : ""}
       ${item.precall_can_run && !isAnalyzing(item) ? `<button class="button small" data-run-precall="${escapeHtml(item.calendar_event_id)}">${documents.some((artifact) => artifact.kind === "precall_research") ? "Refresh research" : "Run research"}</button>` : ""}
-      ${allApproved ? `<button class="button small" data-publish="${escapeHtml(item.calendar_event_id)}">Publish to Notion</button>` : ""}
+      ${allApproved ? `<button class="button small" data-publish="${escapeHtml(item.calendar_event_id)}">Publish approved package</button>` : ""}
     </div>
     <section class="detail-section"><header><h3>Complete pipeline</h3><span>${item.progress}% complete</span></header>${progressSegments(item, true)}</section>
-    <section class="detail-section"><header><h3>Meeting snapshot</h3></header><div class="snapshot-grid"><div><span>Founder</span><strong>${escapeHtml(item.founder_name || item.founder_email || "Pending")}</strong></div><div><span>Industry</span><strong>${escapeHtml(item.industry || "Pending")}</strong></div><div><span>Pre-call report</span><strong>${escapeHtml(titleCase(item.precall_delivery_state))}</strong></div><div><span>Strategy</span><strong>${escapeHtml(titleCase(item.strategy_intent || "Auto"))}</strong></div></div></section>
-    <section class="detail-section"><header><h3>Documents</h3><span>${documents.length} ready</span></header><div class="drawer-documents">${documents.length ? documents.map(drawerDocument).join("") : `<div class="document-empty">Documents appear here as the workflow moves forward.</div>`}</div></section>
-    ${routing ? `<section class="strategy-choice"><span><strong>Strategy decision</strong><small>Choose the right output for this founder conversation.</small></span><div><button class="button small" data-strategy="strategy_requested" data-event="${escapeHtml(item.calendar_event_id)}">Create strategy + deck</button><button class="button secondary small" data-strategy="case_study_only" data-event="${escapeHtml(item.calendar_event_id)}">Case study only</button></div></section>` : ""}
+    <section class="detail-section"><header><h3>Meeting snapshot</h3></header><div class="snapshot-grid"><div><span>Founder</span><strong>${escapeHtml(item.founder_name || item.founder_email || "Pending")}</strong></div><div><span>Industry</span><strong>${escapeHtml(item.industry || "Pending")}</strong></div><div><span>Pre-call report</span><strong>${escapeHtml(titleCase(item.precall_delivery_state))}</strong></div><div><span>Strategy</span><strong>${escapeHtml(strategyLabel(item.strategy_intent))}</strong></div><div><span>Service lane</span><strong>${escapeHtml(titleCase(item.service_lane || "Unsure"))}</strong></div></div></section>
+    <section class="detail-section"><header><h3>Documents</h3><span>${documents.length} artifacts</span></header><div class="drawer-documents">${documents.length ? documents.map((artifact) => drawerDocument(artifact, item.calendar_event_id)).join("") : `<div class="document-empty">Documents appear here as the workflow moves forward.</div>`}</div></section>
+    ${routing ? `<section class="strategy-choice"><span><strong>Strategy decision</strong><small>Choose the right output for this founder conversation.</small></span><div><button class="button small" data-strategy="strategy_requested" data-event="${escapeHtml(item.calendar_event_id)}">Create strategy + deck</button><button class="button secondary small" data-strategy="case_study_only" data-event="${escapeHtml(item.calendar_event_id)}">Growth report only</button></div></section>` : ""}
     <details class="activity-details"><summary>Recent workflow activity</summary>${events.length ? events.map((event) => `<p><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || "")}</span></p>`).join("") : "<p>No activity yet.</p>"}</details>
   </div>`;
   bindActions($("drawerContent"));
@@ -399,8 +411,15 @@ async function downloadArtifact(artifactId) {
 
 async function approveArtifact(artifactId) {
   try {
-    await api(`/internal/artifacts/${artifactId}/decision`, { method: "POST", body: JSON.stringify({ decision: "approve", notes: "" }) });
-    notify("Document approved.");
+    const response = await api(`/internal/artifacts/${artifactId}/decision`, { method: "POST", body: JSON.stringify({ decision: "approve", notes: "" }) });
+    const result = await response.json();
+    if (result.dependent_generation?.status === "failed") {
+      notify(`Document approved, but the dependent draft failed: ${result.dependent_generation.error}`, true);
+    } else if (result.dependent_generation?.status === "ready") {
+      notify("Document approved. Its dependent draft is ready for review.");
+    } else {
+      notify("Document approved.");
+    }
     await load(true);
     if (state.selected) await openDrawer(state.selected);
   } catch (error) { notify(error.message, true); }
@@ -424,10 +443,20 @@ async function submitRevision(notes) {
   } catch (error) { notify(error.message, true); }
 }
 
+async function retryArtifact(artifactId) {
+  try {
+    const response = await api(`/internal/artifacts/${artifactId}/retry`, { method: "POST" });
+    const result = await response.json();
+    notify(result.status === "ready" ? "Document regenerated and ready for review." : `Retry ${titleCase(result.status)}.`);
+    await load(true);
+    if (state.selected) await openDrawer(state.selected);
+  } catch (error) { notify(error.message, true); }
+}
+
 async function decideStrategy(eventId, intent) {
   try {
     await api(`/internal/appointments/${encodeURIComponent(eventId)}/strategy-decision`, { method: "POST", body: JSON.stringify({ intent }) });
-    notify(intent === "strategy_requested" ? "Strategy and pitch deck started." : "Case-study-only route selected.");
+    notify(intent === "strategy_requested" ? "Strategy generation started; the deck follows approval." : "Growth-report-only route selected.");
     await load(true);
     if (state.selected) await openDrawer(state.selected);
   } catch (error) { notify(error.message, true); }
@@ -437,10 +466,40 @@ async function publishNotion(eventId) {
   try {
     const response = await api(`/internal/appointments/${encodeURIComponent(eventId)}/notion/publish`, { method: "POST" });
     const result = await response.json();
-    notify(["published", "already_published"].includes(result.status) ? "Approved documents published to Notion." : `Notion: ${titleCase(result.status)}.`);
+    if (result.status === "linkedin_verification_required") {
+      notify(result.linkedin?.error || "Check the LinkedIn profile before retrying.", true);
+    } else if (result.status === "linkedin_authorization_required") {
+      notify("Reconnect LinkedIn from Admin → Configuration, then retry publishing.", true);
+    } else {
+      notify(["published", "already_published"].includes(result.status) ? "Approved package published." : `Publishing: ${titleCase(result.status)}.`);
+    }
     await load(true);
     if (state.selected) await openDrawer(state.selected);
   } catch (error) { notify(error.message, true); }
+}
+
+async function resolveLinkedIn(eventId, outcome, postUrl = "") {
+  try {
+    const response = await api(`/internal/appointments/${encodeURIComponent(eventId)}/linkedin/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ outcome, post_url: postUrl }),
+    });
+    const result = await response.json();
+    notify(result.status === "recorded" ? "Existing LinkedIn post recorded." : "LinkedIn retry completed.");
+    await load(true);
+    if (state.selected) await openDrawer(state.selected);
+  } catch (error) { notify(error.message, true); }
+}
+
+function recordUncertainLinkedInPost(eventId) {
+  const postUrl = window.prompt("Paste the LinkedIn post URL you found on the connected profile:");
+  if (postUrl?.trim()) resolveLinkedIn(eventId, "published", postUrl.trim());
+}
+
+function retryUncertainLinkedInPost(eventId) {
+  if (window.confirm("Confirm that you checked the connected LinkedIn profile and no post exists. Retry once?")) {
+    resolveLinkedIn(eventId, "retry");
+  }
 }
 
 function openExternal(url) {
@@ -461,8 +520,11 @@ function bindActions(root) {
   root.querySelectorAll("[data-run-precall]").forEach((node) => node.addEventListener("click", () => runPrecall(node.dataset.runPrecall)));
   root.querySelectorAll("[data-approve]").forEach((node) => node.addEventListener("click", () => approveArtifact(node.dataset.approve)));
   root.querySelectorAll("[data-revise]").forEach((node) => node.addEventListener("click", () => openRevisionDialog(node.dataset.revise, node.dataset.title)));
+  root.querySelectorAll("[data-retry]").forEach((node) => node.addEventListener("click", () => retryArtifact(node.dataset.retry)));
   root.querySelectorAll("[data-strategy]").forEach((node) => node.addEventListener("click", () => decideStrategy(node.dataset.event, node.dataset.strategy)));
   root.querySelectorAll("[data-publish]").forEach((node) => node.addEventListener("click", () => publishNotion(node.dataset.publish)));
+  root.querySelectorAll("[data-linkedin-found]").forEach((node) => node.addEventListener("click", () => recordUncertainLinkedInPost(node.dataset.linkedinFound)));
+  root.querySelectorAll("[data-linkedin-retry]").forEach((node) => node.addEventListener("click", () => retryUncertainLinkedInPost(node.dataset.linkedinRetry)));
   root.querySelectorAll("[data-url]").forEach((node) => node.addEventListener("click", () => openExternal(node.dataset.url)));
 }
 

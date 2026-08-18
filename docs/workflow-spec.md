@@ -13,13 +13,17 @@ Founder books discovery call
   → discovery call
   → verified Fathom transcript
   → Founder Intelligence analysis
-  → Growth Autopsy draft
-  → optional 90-day strategy + Gamma-ready deck brief (only when requested)
-  → Diksha approval
+  → Growth Intelligence Report v2 draft
+  → optional one-problem Strategy Doc (only when requested)
+  → Diksha approves/edits each parent document
+  → approved report generates the LinkedIn Growth Autopsy post
+  → approved strategy generates the 13/14-slide pitch deck
+  → Diksha approves/edits each dependent document
   → private Notion package
-  → Diksha edits scope, services, commercials and pricing
   → founder factual/consent approval for public material
-  → public Notion/LinkedIn/founder email
+  → approved text post on the connected LinkedIn personal profile
+  → Diksha edits scope, services, commercials and pricing
+  → public Notion/founder email when separately enabled
   → combine two approved founder insights into weekly newsletter
 ```
 
@@ -111,7 +115,10 @@ Calendar appointment using call time, title and external attendee email.
 
 Founder Intelligence extracts business model, ICP, offer, pricing statements,
 goals, problems, constraints, objections, opportunities, metrics, commitments
-and permissions. It separates founder statements from Diksha's suggestions.
+and permissions. It separates founder statements from Diksha's suggestions and
+maintains a public-safety ledger. It also isolates the founder's exact answer to
+“What's one problem I can solve for you?” and classifies one service lane from
+that problem alone.
 
 Strategy intent is semantic, not keyword-count based:
 
@@ -122,17 +129,27 @@ Strategy intent is semantic, not keyword-count based:
 
 ## Content and approval gates
 
-- Growth Autopsy: Problem → Diagnosis → Evidence → Opportunities → Strategy
-  hypothesis → Expected impact/measurement plan.
-- Do not describe a diagnostic as a results case study unless implemented
-  outcomes exist.
-- Strategy: prioritized 30/60/90-day plan, channels, quick wins, experiments,
-  KPIs, risks, access requirements and decision rules.
-- The draft deck brief uses explicit placeholders for service scope, commercial
-  terms, and pricing. Diksha supplies those inputs before a final Gamma deck is
-  exported or sent.
+- The 14-section Growth Intelligence Report keeps facts, earned credit,
+  diagnosis, missing opportunities, six-lens observations, MMS recommendations,
+  one 90-day lever and the share layer separate. “Case study” never appears in
+  the founder-facing report.
+- Every claim is a Founder Fact, public Observation or MMS Interpretation and
+  uses the corresponding factual, qualified or interpretive wording.
+- The one-problem Strategy Doc mirrors the founder's exact words, amplifies only
+  their stated pain through conservative arithmetic, absolves the founder,
+  earns agreement on a standalone strategy, and reveals only the matching MMS
+  service lane afterward.
+- Paid-media strategy includes the past-ads inoculation, full fee/spend
+  transparency fields and an honest learn/optimise/scale timeline. Missing
+  commercial inputs remain conspicuous Diksha fields and are never invented.
+- The pitch deck is generated from the approved Strategy Doc, not independently
+  from the transcript. It contains 14 slides for paid media or 13 otherwise;
+  price is on the final slide only.
+- The LinkedIn post is generated from the approved report and includes a private
+  claim ledger plus an explicit founder-approval/publishing gate.
 - Diksha approval and founder public-consent approval are separate gates.
-- Rejection creates a revision loop; it never silently publishes.
+- Rejection creates a revision loop. Revising a parent invalidates its dependent
+  post/deck so stale content cannot be approved or published.
 
 ## Weekly newsletter
 
@@ -152,8 +169,11 @@ Mosaics point of view and CTA. Future YouTube derivatives remain a later slice.
 | Similarweb/Ahrefs datasets | Not configured; never fabricated |
 | Fathom verification, transcript capture and matching | Implemented |
 | Founder Intelligence handoff | Implemented |
-| Growth Autopsy, 90-day strategy and pitch-deck brief | Implemented with semantic routing |
+| Growth Intelligence Report v2 and evidence validator | Implemented |
+| One-problem Strategy Doc with service-lane routing | Implemented |
+| Approval-derived LinkedIn post and 13/14-slide deck | Implemented |
 | Diksha approval/revision controls | Implemented for generated artifacts |
 | Private approval-gated Notion package | Implemented |
-| Final Gamma export, founder email/consent, public Notion, LinkedIn | Pending |
+| Idempotent personal LinkedIn publishing after Notion | Implemented; OAuth + consent configuration required |
+| Final Gamma export, founder email/consent and public Notion sharing | Pending |
 | Two-founder newsletter batching | Pending |

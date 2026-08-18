@@ -13,16 +13,19 @@ Discovery call and Fathom transcript
         ↓
 Direct AI analysis and document generation
         ↓
-Founder Intelligence + Growth Autopsy + conditional Strategy and Pitch Deck
+Founder Intelligence → Growth Intelligence Report → approval-derived LinkedIn post
+        + conditional one-problem Strategy → approval-derived Pitch Deck
         ↓
 Human approval
         ↓
-Private Notion page
+Private Notion page → approved post on the connected LinkedIn profile
 ```
 
 The application includes a Jira-style pipeline dashboard, a compact table view, HTML document previews, PDF downloads, SQLite persistence, secure webhook processing, and an approval/revision workflow.
 
 The workflow contract is documented in [docs/workflow-spec.md](docs/workflow-spec.md).
+The production EC2 deployment sequence is documented in
+[docs/deploy-ec2.md](docs/deploy-ec2.md).
 
 ## What is implemented
 
@@ -36,11 +39,16 @@ The workflow contract is documented in [docs/workflow-spec.md](docs/workflow-spe
 - polished HTML report previews and cached A4 PDF downloads
 - Fathom webhook signature verification, replay protection, transcript storage, and Calendar matching
 - Fathom API transcript fallback when the webhook does not contain a transcript
-- Founder Intelligence, Growth Autopsy, and conditional Strategy/Pitch Deck generation
+- evidence-led Founder Intelligence with public-safety and one-problem routing ledgers
+- 14-section Growth Intelligence Report v2 with strict evidence and tone validation
+- approval-derived LinkedIn Growth Autopsy post with a public-claim ledger
+- conditional one-problem Strategy Doc and approval-derived 13/14-slide Pitch Deck
 - an explicit human decision when strategy intent is uncertain
 - approve, reject, revise, and regenerate controls
 - approval-gated, idempotent private Notion publishing
+- OAuth-based, approval-gated personal LinkedIn publishing after Notion succeeds
 - a responsive pipeline dashboard backed by SQLite
+- a local-only admin console with a read-only database browser and masked configuration editor
 - a CLI for setup, diagnostics, synchronization, and serving the application
 
 Hermes Agent is not required. The application owns the deterministic workflow and calls the configured AI endpoint directly.
@@ -126,6 +134,12 @@ Open `.env` in a text editor. The minimum settings needed for Calendar and AI pr
 GA_ENVIRONMENT=development
 GA_DATABASE_PATH=./data/growth_autopsy.db
 GA_SHARED_WORKDIR=./data
+
+# Required only when GA_ENVIRONMENT=production
+GA_APP_USERNAME=
+GA_APP_PASSWORD=
+GA_SESSION_SECRET=
+GA_SESSION_TTL_HOURS=12
 
 GA_GOOGLE_CALENDAR_ID=primary
 GA_GOOGLE_TOKEN_FILE=./secrets/google-token.json
@@ -275,6 +289,7 @@ uv run growth-autopsy serve --host 127.0.0.1 --port 8787
 Open:
 
 - Dashboard: [http://127.0.0.1:8787](http://127.0.0.1:8787)
+- Admin console: [http://127.0.0.1:8787/admin/](http://127.0.0.1:8787/admin/)
 - Health check: [http://127.0.0.1:8787/health](http://127.0.0.1:8787/health)
 
 You can also test the health endpoint from another terminal:
@@ -365,29 +380,99 @@ GA_NOTION_API_VERSION=2026-03-11
 GA_NOTION_PUBLISH_AFTER_APPROVAL=true
 ```
 
-Restart the server. After a document package is approved in the dashboard, use the Notion publish action. Publishing creates a private child page under the configured parent and records the page ID/URL so retries do not create duplicates.
+Restart the server. After a document package is approved in the dashboard, publishing creates a private child page under the configured parent and records the page ID/URL so retries do not create duplicates.
 
-Approval publishes content to the private Notion workspace only. It does not automatically make a public Notion page, send founder email, or publish to LinkedIn.
+## 8. Configure personal LinkedIn publishing
 
-## 8. Use the dashboard
+Create or open a LinkedIn Developer app associated with the profile/business that owns this installation. In the app:
+
+1. Enable **Share on LinkedIn** so the app can request `w_member_social`.
+2. Enable **Sign In with LinkedIn using OpenID Connect** so the app can identify the authorized member using `openid profile`.
+3. Add this exact authorized redirect URL:
+
+```text
+http://localhost:8787/internal/linkedin/oauth/callback
+```
+
+Copy the app's Client ID and Client Secret into Admin → Configuration → LinkedIn, or set:
+
+```dotenv
+GA_LINKEDIN_CLIENT_ID=replace_with_client_id
+GA_LINKEDIN_CLIENT_SECRET=replace_with_client_secret
+GA_LINKEDIN_REDIRECT_URI=http://localhost:8787/internal/linkedin/oauth/callback
+GA_LINKEDIN_TOKEN_FILE=./secrets/linkedin-token.json
+GA_LINKEDIN_API_VERSION=202607
+GA_LINKEDIN_PUBLISH_AFTER_NOTION=true
+```
+
+Restart the application, reopen [Admin → Configuration](http://127.0.0.1:8787/admin/#configuration), and select **Connect LinkedIn**. Sign in to the personal profile that should publish the posts and approve access. The application writes the access token to `./secrets/linkedin-token.json` with local-user-only permissions; neither the token nor the client secret is returned to the admin browser.
+
+Once enabled, the final approval triggers this order:
+
+```text
+all required documents approved
+  → private Notion page succeeds
+  → the approved Draft Post section is extracted without internal ledgers
+  → that exact public text is published to the connected personal profile
+  → Notion page ID and LinkedIn post URN/URL are stored for duplicate protection
+```
+
+If LinkedIn returns an uncertain network outcome, the automation does not retry blindly. It pauses and offers two explicit dashboard actions: record the post URL if the post exists, or confirm that the profile was checked and retry once if it does not. LinkedIn access tokens expire; reconnect the profile from Admin when the status changes to **Expired**.
+
+This publishes the approved text post only. It does not create the “full Growth Autopsy” comment, make the private Notion page public, attach a document/carousel, or send founder email. Add any public report link/comment separately. Only enable automatic LinkedIn publishing after founder/public-content consent is part of your approval process.
+
+## 9. Use the dashboard
 
 Open [http://127.0.0.1:8787](http://127.0.0.1:8787). The board tracks each meeting through:
 
 ```text
 Booking → Pre-call → Discovery Call → Transcript → AI Analysis
-        → Case Study → Strategy + Deck → Approval → Notion
+        → Growth Intelligence Report → Strategy + share assets → Approval
+        → Notion → LinkedIn
 ```
 
 Each card is titled with the Calendar meeting name. Open a card to see the next action, current progress, founder/company context, generated documents, approvals, and a collapsed technical activity log. Completed reports open as formatted HTML and can be downloaded as A4 PDFs; raw Markdown is not exposed in the UI.
 
-If the AI confidently detects a strategy discussion, the service generates:
+If the AI confidently detects a strategy discussion, the approval-gated sequence is:
 
 1. Founder Intelligence document
-2. Growth Autopsy/case study document
-3. 90-day Strategy document
-4. Gamma-ready Pitch Deck brief
+2. Growth Intelligence Report v2
+3. One-problem Strategy Doc
+4. After report approval: LinkedIn Growth Autopsy post
+5. After strategy approval: Gamma-ready Pitch Deck
+
+The report keeps facts, praise, diagnosis, opportunities, MMS recommendations and
+shareable lessons separate. The Strategy Doc routes only from the founder's stated
+problem; it never invents commercial inputs. Paid-media decks contain 14 slides,
+secondary-lane decks contain 13, and pricing remains on the final slide.
 
 If no strategy discussion occurred, only the applicable non-strategy documents are created. If the routing decision is uncertain, the pipeline pauses for a human choice.
+
+## 10. Use the admin console
+
+Open [http://127.0.0.1:8787/admin/](http://127.0.0.1:8787/admin/) or select **Admin** in the dashboard header.
+
+The **Database** section provides a MongoDB-style collection browser for the application's allowlisted SQLite tables. It supports record counts, full-field search, pagination, and a structured record inspector. Every database request uses a separate query-only connection; the admin console cannot insert, update, or delete database records.
+
+The **Configuration** section edits the supported `GA_*` values in the repository's `.env` file. API keys and other secrets are never returned to the browser: the UI shows only whether a secret is configured, and a blank secret field means “keep the current value.” Clearing a saved secret requires the explicit **Clear saved** action. Saves are atomic and the resulting `.env` file is restricted to the local user. Restart the application after saving configuration so the running scheduler and integrations receive the new values.
+
+You can also upload a Google **Desktop app** OAuth JSON from the Configuration page. The file is validated and saved as:
+
+```text
+./secrets/google-oauth-client.json
+```
+
+The browser does not generate or expose a Google access token. After uploading, copy the command shown in the console and run it from the repository root:
+
+```bash
+uv run growth-autopsy calendar-auth --client-secret ./secrets/google-oauth-client.json
+```
+
+The generated Calendar token is saved to `GA_GOOGLE_TOKEN_FILE`, normally `./secrets/google-token.json`.
+
+The admin APIs reject non-loopback clients. Keep the service bound to `127.0.0.1`; the ngrok traffic policy intentionally blocks the admin console and all `/internal/*` routes.
+
+LinkedIn OAuth also returns to localhost and must be completed from the same Mac running the application. Do not use the ngrok Fathom webhook URL as the LinkedIn redirect URL.
 
 ## CLI reference
 
@@ -412,6 +497,7 @@ Install development dependencies with `uv sync --extra dev`, then run:
 uv run pytest
 uv run python -m compileall -q src tests
 node --check src/growth_autopsy/dashboard/app.js
+node --check src/growth_autopsy/dashboard/admin/admin.js
 ```
 
 Before committing a change, also review the worktree:
@@ -483,9 +569,13 @@ Confirm `GA_AI_BASE_URL`, `GA_AI_API_KEY`, and `GA_AI_MODEL`, then verify that t
 
 ## Security and production notes
 
-- The dashboard has no login. Keep it private and bind it to `127.0.0.1`.
+- Local development has no login and must remain bound to `127.0.0.1`.
+- Production enables signed operator login and refuses startup when its username,
+  password, or session-signing secret is missing.
 - The ngrok policy is suitable for local Fathom testing because it exposes only the webhook route.
-- For an always-on deployment, put the service behind a trusted reverse proxy, expose only the required webhook route publicly, and protect dashboard/internal routes with network access control or authentication.
+- The EC2 deployment binds the application to loopback behind Nginx. Only `/health`,
+  `/login`, and the signature-verified Fathom webhook work without an operator
+  session; dashboard, documents, admin and internal APIs require login.
 - Keep `.env`, Google OAuth files, API keys, webhook secrets, transcripts, and generated client documents out of Git.
 - Back up the `data/` directory because it contains the SQLite workflow database and generated artifacts.
 - SQLite is appropriate for a single service instance. Coordinate database/storage changes before running multiple replicas.
