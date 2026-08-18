@@ -793,20 +793,34 @@ class FreePrecallResearcher:
     async def collect(self, appointment: Appointment) -> dict[str, Any]:
         root = normalize_website_url(appointment.website)
         warnings: list[str] = []
+        homepage_fetch: FetchResult | None = None
+        direct_fetch_error = ""
         try:
             homepage_fetch = await self.fetcher.fetch(root, html_only=True)
         except Exception as first_error:
             if not root.startswith("https://"):
-                raise
-            try:
-                homepage_fetch = await self.fetcher.fetch("http://" + root.removeprefix("https://"), html_only=True)
-                warnings.append(f"HTTPS failed and HTTP fallback was used: {first_error}")
-            except Exception as exc:
-                raise ResearchError(f"Company homepage could not be collected: {exc}") from exc
-        if homepage_fetch.status_code >= 400:
-            raise ResearchError(f"Company homepage returned HTTP {homepage_fetch.status_code}")
-        homepage, links = parse_html(homepage_fetch)
-        final_root = homepage_fetch.final_url
+                direct_fetch_error = str(first_error)[:500]
+            else:
+                try:
+                    homepage_fetch = await self.fetcher.fetch(
+                        "http://" + root.removeprefix("https://"), html_only=True
+                    )
+                    warnings.append(
+                        "HTTPS collection failed and the public HTTP endpoint was used; "
+                        f"HTTPS error: {str(first_error)[:300]}"
+                    )
+                except Exception as exc:
+                    direct_fetch_error = str(exc)[:500]
+
+        final_root = homepage_fetch.final_url if homepage_fetch else root
+        direct_status = homepage_fetch.status_code if homepage_fetch else None
+        if direct_status is not None and direct_status >= 400:
+            direct_fetch_error = f"Direct HTTP collection returned {direct_status}"
+            warnings.append(
+                f"Company homepage returned HTTP {direct_status} to the direct collector; "
+                "browser rendering was attempted."
+            )
+
         browser_render: dict[str, Any] = {
             "status": "disabled",
             "provider": "Playwright Chromium",
@@ -823,7 +837,7 @@ class FreePrecallResearcher:
                     max_response_bytes=self.settings.precall_max_response_bytes,
                 ).render(final_root)
                 if rendered.fetch.status_code < 400:
-                    homepage, links = parse_html(rendered.fetch)
+                    homepage_fetch = rendered.fetch
                     final_root = rendered.fetch.final_url
                     browser_render = {
                         "status": "available",
@@ -832,15 +846,44 @@ class FreePrecallResearcher:
                         "elapsed_ms": rendered.fetch.elapsed_ms,
                         "blocked_requests": rendered.blocked_requests,
                     }
+                else:
+                    browser_render = {
+                        "status": "blocked",
+                        "provider": "Playwright Chromium",
+                        "final_url": rendered.fetch.final_url,
+                        "http_status": rendered.fetch.status_code,
+                        "elapsed_ms": rendered.fetch.elapsed_ms,
+                        "blocked_requests": rendered.blocked_requests,
+                    }
+                    warnings.append(
+                        "Browser rendering also returned HTTP "
+                        f"{rendered.fetch.status_code}; homepage-derived evidence is limited."
+                    )
             except Exception as exc:
                 browser_render = {
                     "status": "unavailable",
                     "provider": "Playwright Chromium",
                     "error": str(exc)[:500],
                 }
-                warnings.append(f"Playwright rendering unavailable; HTTP HTML was used: {exc}")
+                warnings.append(f"Playwright rendering unavailable: {str(exc)[:500]}")
         elif self.transport is not None:
             browser_render["reason"] = "disabled_for_injected_transport"
+
+        homepage_available = bool(homepage_fetch and homepage_fetch.status_code < 400)
+        if homepage_available and homepage_fetch is not None:
+            homepage, links = parse_html(homepage_fetch)
+        else:
+            homepage = {
+                "url": final_root,
+                "status": "unavailable",
+                "status_code": direct_status,
+                "error": direct_fetch_error or "Homepage HTML could not be collected",
+            }
+            links = []
+            warnings.append(
+                "Homepage HTML was unavailable, so research continued with public search, "
+                "PageSpeed, sitemap, advertising-transparency discovery and licensed sources."
+            )
 
         robots_url = urljoin(final_root, "/robots.txt")
         sitemap_url = urljoin(final_root, "/sitemap.xml")
@@ -861,7 +904,14 @@ class FreePrecallResearcher:
 
         async def crawl(url: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
             if url.rstrip("/") == final_root.rstrip("/"):
-                return homepage, None
+                if homepage_available:
+                    return homepage, None
+                return None, {
+                    "url": final_root,
+                    "status": "homepage_unavailable",
+                    "status_code": direct_status,
+                    "error": direct_fetch_error or "Homepage HTML could not be collected",
+                }
             if not robots_allows(robots_text, url):
                 return None, {"url": url, "status": "skipped_by_robots_txt"}
             async with semaphore:

@@ -49,7 +49,6 @@ class PlaywrightRenderer:
                     accept_downloads=False,
                     service_workers="block",
                     java_script_enabled=True,
-                    user_agent="GrowthAutopsyResearchBot/0.3 (+public pre-call research)",
                     viewport={"width": 1440, "height": 1000},
                 )
 

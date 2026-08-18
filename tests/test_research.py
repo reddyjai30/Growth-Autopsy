@@ -5,9 +5,10 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from growth_autopsy.browser import BrowserRenderResult, PlaywrightRenderer
 from growth_autopsy.config import Settings
 from growth_autopsy.domain import Appointment, AppointmentStatus
-from growth_autopsy.research import FreePrecallResearcher
+from growth_autopsy.research import FetchResult, FreePrecallResearcher
 
 
 def appointment() -> Appointment:
@@ -98,3 +99,95 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
     assert evidence["appointment"]["meeting_agenda"] == (
         "Discuss acquisition and conversion"
     )
+
+
+@pytest.mark.asyncio
+async def test_free_research_uses_browser_when_direct_homepage_is_blocked(
+    tmp_path, monkeypatch
+) -> None:
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        precall_search_enabled=False,
+        precall_pagespeed_enabled=False,
+        semrush_mcp_enabled=False,
+        semrush_api_key="",
+        playwright_enabled=True,
+    ).resolve_paths(tmp_path)
+    researcher = FreePrecallResearcher(settings, validate_network=False)
+
+    async def blocked_fetch(raw_url: str, *, html_only: bool = False) -> FetchResult:
+        del html_only
+        return FetchResult(
+            requested_url=raw_url,
+            final_url=raw_url,
+            status_code=403,
+            content_type="text/html",
+            text="<html><title>Forbidden</title></html>",
+            elapsed_ms=5,
+            headers={"content-type": "text/html"},
+        )
+
+    rendered_html = """
+    <html><head><title>Acme — Browser rendered</title></head>
+    <body><h1>Better shoes</h1><a href="/shop">Shop now</a></body></html>
+    """
+
+    async def rendered_fetch(
+        self: PlaywrightRenderer, raw_url: str
+    ) -> BrowserRenderResult:
+        del self
+        return BrowserRenderResult(
+            fetch=FetchResult(
+                requested_url=raw_url,
+                final_url=raw_url,
+                status_code=200,
+                content_type="text/html",
+                text=rendered_html,
+                elapsed_ms=12,
+                headers={"content-type": "text/html"},
+            ),
+            blocked_requests=3,
+        )
+
+    monkeypatch.setattr(researcher.fetcher, "fetch", blocked_fetch)
+    monkeypatch.setattr(PlaywrightRenderer, "render", rendered_fetch)
+
+    evidence = await researcher.collect(appointment())
+
+    assert evidence["website"]["browser_render"]["status"] == "available"
+    assert evidence["website"]["homepage"]["status_code"] == 200
+    assert evidence["website"]["site_summary"]["pages_successfully_analyzed"] == 1
+    assert any("returned HTTP 403" in item for item in evidence["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_free_research_continues_when_homepage_cannot_be_rendered(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            text="<html><title>Forbidden</title></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        precall_search_enabled=False,
+        precall_pagespeed_enabled=False,
+        semrush_mcp_enabled=False,
+        semrush_api_key="",
+        playwright_enabled=True,
+    ).resolve_paths(tmp_path)
+    researcher = FreePrecallResearcher(
+        settings,
+        transport=httpx.MockTransport(handler),
+        validate_network=False,
+    )
+
+    evidence = await researcher.collect(appointment())
+
+    assert evidence["website"]["homepage"]["status"] == "unavailable"
+    assert evidence["website"]["site_summary"]["pages_successfully_analyzed"] == 0
+    assert evidence["website"]["crawl_errors"][0]["status"] == "homepage_unavailable"
+    assert any("research continued" in item for item in evidence["warnings"])
