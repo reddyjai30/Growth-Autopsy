@@ -224,7 +224,11 @@ class DirectPostcallAI:
 
 @pytest.mark.asyncio
 async def test_strategy_call_queues_parent_documents_and_schedules_dependents(tmp_path) -> None:
-    settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        linkedin_enabled=True,
+    )
     store = WorkflowStore(settings.database_path)
     store.initialize()
     item = appointment()
@@ -242,6 +246,7 @@ async def test_strategy_call_queues_parent_documents_and_schedules_dependents(tm
             "<!-- strategy_intent: strategy_requested -->\n"
             "<!-- service_lane: sales_playbook -->"
         ),
+        linkedin_enabled=settings.linkedin_enabled,
     )
 
     assert {result["kind"] for result in queued} == {
@@ -268,7 +273,11 @@ async def test_strategy_call_queues_parent_documents_and_schedules_dependents(tm
 async def test_direct_postcall_worker_creates_parent_documents_then_approval_children(
     tmp_path,
 ) -> None:
-    settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        linkedin_enabled=True,
+    )
     store = WorkflowStore(settings.database_path)
     store.initialize()
     item = appointment()
@@ -415,8 +424,53 @@ async def test_notion_publish_waits_for_all_approvals_and_is_idempotent(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_approval_endpoint_generates_child_from_approved_parent(tmp_path) -> None:
+async def test_linkedin_dependency_is_skipped_while_workflow_is_disabled(tmp_path) -> None:
     settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    store = WorkflowStore(settings.database_path)
+    store.initialize()
+    item = appointment()
+    store.upsert_appointment(item)
+    store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=item.calendar_event_id,
+            kind="founder_intelligence",
+            title="Founder Intelligence",
+            status=ArtifactStatus.READY,
+            content="<!-- service_lane: sales_playbook -->",
+        )
+    )
+    report_id = store.upsert_artifact(
+        Artifact(
+            id=None,
+            calendar_event_id=item.calendar_event_id,
+            kind="growth_autopsy",
+            title="Growth Intelligence Report",
+            status=ArtifactStatus.APPROVED,
+            content="Approved report",
+        )
+    )
+    report = store.get_artifact(report_id)
+    assert report is not None
+
+    generated = await generate_dependent_deliverable_direct(
+        settings,
+        store,
+        DirectPostcallAI(),  # type: ignore[arg-type]
+        report,
+    )
+
+    assert generated is None
+    assert store.get_artifact_by_kind(item.calendar_event_id, "linkedin_post") is None
+
+
+@pytest.mark.asyncio
+async def test_approval_endpoint_generates_child_from_approved_parent(tmp_path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        linkedin_enabled=True,
+    )
     store = WorkflowStore(settings.database_path)
     store.initialize()
     item = appointment()

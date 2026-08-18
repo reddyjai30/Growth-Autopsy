@@ -382,7 +382,15 @@ GA_NOTION_PUBLISH_AFTER_APPROVAL=true
 
 Restart the server. After a document package is approved in the dashboard, publishing creates a private child page under the configured parent and records the page ID/URL so retries do not create duplicates.
 
-## 8. Configure personal LinkedIn publishing
+## 8. Configure personal LinkedIn publishing (currently paused)
+
+The LinkedIn generation and publishing lane is disabled by default while its
+post contract and OAuth setup are being finalized. Keep
+`GA_LINKEDIN_ENABLED=false`; approved workflows will publish to Notion without
+creating, requiring, retrying, or publishing a LinkedIn artifact.
+
+TODO: When LinkedIn is ready to resume, complete the setup below and change
+`GA_LINKEDIN_ENABLED=true`.
 
 Create or open a LinkedIn Developer app associated with the profile/business that owns this installation. In the app:
 
@@ -402,6 +410,7 @@ GA_LINKEDIN_CLIENT_SECRET=replace_with_client_secret
 GA_LINKEDIN_REDIRECT_URI=http://localhost:8787/internal/linkedin/oauth/callback
 GA_LINKEDIN_TOKEN_FILE=./secrets/linkedin-token.json
 GA_LINKEDIN_API_VERSION=202607
+GA_LINKEDIN_ENABLED=false
 GA_LINKEDIN_PUBLISH_AFTER_NOTION=true
 ```
 

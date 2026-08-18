@@ -90,6 +90,7 @@ async def test_oauth_start_is_local_only_and_stores_only_a_state_hash(tmp_path: 
         linkedin_client_id="client-id",
         linkedin_client_secret="client-secret",
         linkedin_token_file=tmp_path / "linkedin-token.json",
+        linkedin_enabled=True,
     ).resolve_paths(tmp_path)
     store = WorkflowStore(settings.database_path)
     store.initialize()
@@ -190,6 +191,7 @@ async def test_distribution_publishes_notion_then_linkedin_exactly_once(tmp_path
         linkedin_client_secret="client-secret",
         linkedin_redirect_uri="http://localhost:8787/internal/linkedin/oauth/callback",
         linkedin_token_file=tmp_path / "secrets" / "linkedin-token.json",
+        linkedin_enabled=True,
         linkedin_publish_after_notion=True,
     ).resolve_paths(tmp_path)
     store = WorkflowStore(settings.database_path)
@@ -287,7 +289,11 @@ async def test_distribution_publishes_notion_then_linkedin_exactly_once(tmp_path
 
 @pytest.mark.asyncio
 async def test_uncertain_publish_can_record_a_verified_existing_post(tmp_path: Path) -> None:
-    settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    settings = Settings(
+        database_path=tmp_path / "state.db",
+        shared_workdir=tmp_path,
+        linkedin_enabled=True,
+    )
     store = WorkflowStore(settings.database_path)
     store.initialize()
     appointment = _appointment()

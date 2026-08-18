@@ -375,6 +375,7 @@ async def _collect_postcall_run(
             appointment,
             founder_intelligence_path=str(path),
             founder_intelligence=output,
+            linkedin_enabled=settings.linkedin_enabled,
         )
         return {"recording_id": recording_id, "status": "ready", "queued": queued}
     if run_status in {"completed", "complete", "succeeded", "success"}:
@@ -404,6 +405,18 @@ DEPENDENT_DELIVERABLES = {
 PARENT_DELIVERABLES = {
     child: parent for parent, child in DEPENDENT_DELIVERABLES.items()
 }
+LINKEDIN_ARTIFACT_KINDS = frozenset({"linkedin_post", "linkedin_publication"})
+
+
+def _dependent_deliverable_kind(
+    parent_kind: str,
+    *,
+    linkedin_enabled: bool,
+) -> str | None:
+    child_kind = DEPENDENT_DELIVERABLES.get(parent_kind)
+    if child_kind == "linkedin_post" and not linkedin_enabled:
+        return None
+    return child_kind
 
 
 def classify_strategy_intent(appointment: Appointment, founder_intelligence: str) -> str:
@@ -428,8 +441,13 @@ def _schedule_dependent_deliverable(
     store: WorkflowStore,
     appointment: Appointment,
     parent_kind: str,
+    *,
+    linkedin_enabled: bool,
 ) -> None:
-    child_kind = DEPENDENT_DELIVERABLES.get(parent_kind)
+    child_kind = _dependent_deliverable_kind(
+        parent_kind,
+        linkedin_enabled=linkedin_enabled,
+    )
     if child_kind is None or store.get_artifact_by_kind(
         appointment.calendar_event_id, child_kind
     ):
@@ -450,10 +468,14 @@ def _schedule_dependent_deliverable(
 
 
 def invalidate_dependent_deliverable(
+    settings: Settings,
     store: WorkflowStore,
     parent: Artifact,
 ) -> None:
-    child_kind = DEPENDENT_DELIVERABLES.get(parent.kind)
+    child_kind = _dependent_deliverable_kind(
+        parent.kind,
+        linkedin_enabled=settings.linkedin_enabled,
+    )
     if child_kind is None:
         return
     child = store.get_artifact_by_kind(parent.calendar_event_id, child_kind)
@@ -674,7 +696,12 @@ async def run_direct_postcall_analysis(
                     precall_report,
                 )
             )
-            _schedule_dependent_deliverable(store, appointment, kind)
+            _schedule_dependent_deliverable(
+                store,
+                appointment,
+                kind,
+                linkedin_enabled=settings.linkedin_enabled,
+            )
         store.mark_recording_status(recording_id, RecordingStatus.ANALYSIS_COMPLETE)
         _refresh_content_status(store, appointment.calendar_event_id)
         return {
@@ -773,7 +800,12 @@ async def resolve_strategy_decision_direct(
                 precall_report,
             )
         )
-        _schedule_dependent_deliverable(store, appointment, kind)
+        _schedule_dependent_deliverable(
+            store,
+            appointment,
+            kind,
+            linkedin_enabled=settings.linkedin_enabled,
+        )
     _refresh_content_status(store, event_id)
     return results
 
@@ -786,7 +818,10 @@ async def generate_dependent_deliverable_direct(
 ) -> dict[str, Any] | None:
     """Generate a child only after its authoritative parent is approved."""
 
-    child_kind = DEPENDENT_DELIVERABLES.get(parent.kind)
+    child_kind = _dependent_deliverable_kind(
+        parent.kind,
+        linkedin_enabled=settings.linkedin_enabled,
+    )
     if child_kind is None:
         return None
     if parent.status != ArtifactStatus.APPROVED or not parent.content.strip():
@@ -815,6 +850,8 @@ async def retry_postcall_artifact_direct(
     ai: AIClient,
     artifact: Artifact,
 ) -> dict[str, Any]:
+    if artifact.kind == "linkedin_post" and not settings.linkedin_enabled:
+        raise ValueError("LinkedIn workflow is temporarily disabled")
     if artifact.kind not in DELIVERABLES:
         raise ValueError("Only post-call documents can be retried here")
     if artifact.status != ArtifactStatus.FAILED:
@@ -855,6 +892,8 @@ async def revise_postcall_artifact_direct(
     artifact: Artifact,
     revision_notes: str,
 ) -> dict[str, Any]:
+    if artifact.kind == "linkedin_post" and not settings.linkedin_enabled:
+        raise ValueError("LinkedIn workflow is temporarily disabled")
     appointment = store.get_appointment(artifact.calendar_event_id)
     if appointment is None:
         raise ValueError("Appointment not found")
@@ -903,7 +942,7 @@ async def revise_postcall_artifact_direct(
             content=revised,
             notes="Direct AI revision completed; waiting for Diksha approval",
         )
-        invalidate_dependent_deliverable(store, artifact)
+        invalidate_dependent_deliverable(settings, store, artifact)
         return {"artifact_id": artifact.id, "status": ArtifactStatus.READY.value}
     except Exception as exc:
         store.update_artifact(
@@ -968,6 +1007,7 @@ async def queue_postcall_deliverables(
     founder_intelligence_path: str,
     founder_intelligence: str,
     intent_override: str | None = None,
+    linkedin_enabled: bool = False,
 ) -> list[dict[str, Any]]:
     intent = intent_override or classify_strategy_intent(appointment, founder_intelligence)
     if intent not in {"strategy_requested", "case_study_only", "unsure"}:
@@ -1007,7 +1047,12 @@ async def queue_postcall_deliverables(
         )
     )
     for kind in kinds:
-        _schedule_dependent_deliverable(store, appointment, kind)
+        _schedule_dependent_deliverable(
+            store,
+            appointment,
+            kind,
+            linkedin_enabled=linkedin_enabled,
+        )
     _refresh_content_status(store, appointment.calendar_event_id)
     return results
 
@@ -1076,7 +1121,12 @@ async def _collect_deliverable_run(
             content=output,
             notes="Hermes draft completed; waiting for Diksha approval",
         )
-        _schedule_dependent_deliverable(store, appointment, artifact.kind)
+        _schedule_dependent_deliverable(
+            store,
+            appointment,
+            artifact.kind,
+            linkedin_enabled=settings.linkedin_enabled,
+        )
         _refresh_content_status(store, artifact.calendar_event_id)
         return {"artifact_id": artifact.id, "status": "ready", "kind": artifact.kind}
     if run_status in {"failed", "error", "cancelled", "canceled"}:
@@ -1135,6 +1185,8 @@ async def resolve_strategy_decision(
     hermes: HermesClient,
     event_id: str,
     intent: str,
+    *,
+    linkedin_enabled: bool = False,
 ) -> list[dict[str, Any]]:
     if intent not in {"strategy_requested", "case_study_only"}:
         raise ValueError("Strategy decision must be strategy_requested or case_study_only")
@@ -1156,6 +1208,7 @@ async def resolve_strategy_decision(
         founder_intelligence_path=intelligence.file_path,
         founder_intelligence=intelligence.content,
         intent_override=intent,
+        linkedin_enabled=linkedin_enabled,
     )
 
 
@@ -1187,7 +1240,9 @@ async def publish_approved_package(
     intent = store.get_setting(f"strategy_intent:{event_id}") or "unsure"
     if intent == "unsure":
         return {"status": "waiting_for_strategy_decision"}
-    required = ["growth_autopsy", "linkedin_post"]
+    required = ["growth_autopsy"]
+    if settings.linkedin_enabled:
+        required.append("linkedin_post")
     if intent == "strategy_requested":
         required.extend(["strategy_doc", "pitch_deck_brief"])
     artifacts = [store.get_artifact_by_kind(event_id, kind) for kind in required]
@@ -1255,6 +1310,8 @@ async def publish_approved_linkedin_post(
     linkedin: LinkedInClient | None = None,
     token_store: LinkedInTokenStore | None = None,
 ) -> dict[str, Any]:
+    if not settings.linkedin_enabled:
+        return {"status": "disabled"}
     appointment = store.get_appointment(event_id)
     if appointment is None:
         raise ValueError("Appointment not found")
@@ -1349,16 +1406,19 @@ async def publish_approved_distribution(
 ) -> dict[str, Any]:
     """Publish Notion first, then LinkedIn, without duplicating either write."""
 
+    linkedin_should_publish = (
+        settings.linkedin_enabled and settings.linkedin_publish_after_notion
+    )
     notion_result = await publish_approved_package(
         settings,
         store,
         event_id,
         notion=notion,
-        mark_published=not settings.linkedin_publish_after_notion,
+        mark_published=not linkedin_should_publish,
     )
     if notion_result["status"] not in {"published", "already_published"}:
         return {"status": notion_result["status"], "notion": notion_result}
-    if not settings.linkedin_publish_after_notion:
+    if not linkedin_should_publish:
         return notion_result
     linkedin_result = await publish_approved_linkedin_post(
         settings,
@@ -1389,6 +1449,8 @@ async def resolve_linkedin_publication_uncertainty(
     *,
     post_url: str = "",
 ) -> dict[str, Any]:
+    if not settings.linkedin_enabled:
+        return {"status": "disabled"}
     publication = store.get_artifact_by_kind(event_id, "linkedin_publication")
     if publication is None or publication.status != ArtifactStatus.REVISION_REQUESTED:
         raise ValueError("There is no uncertain LinkedIn publication to resolve")
@@ -1504,7 +1566,11 @@ def _appointment_payload(
     include_details: bool = False,
 ) -> dict[str, Any]:
     current = now or datetime.now(UTC)
-    artifacts = store.list_artifacts(appointment.calendar_event_id)
+    artifacts = [
+        item
+        for item in store.list_artifacts(appointment.calendar_event_id)
+        if settings.linkedin_enabled or item.kind not in LINKEDIN_ARTIFACT_KINDS
+    ]
     kinds = {item.kind: item for item in artifacts}
     recordings = store.list_recordings(appointment.calendar_event_id)
     delivery_at = appointment.start_at - timedelta(
@@ -1548,13 +1614,16 @@ def _appointment_payload(
         for item in artifacts
     ):
         active = max(active, 7)
+    linkedin_should_publish = (
+        settings.linkedin_enabled and settings.linkedin_publish_after_notion
+    )
     linkedin_complete = (
         "linkedin_publication" in kinds
         and kinds["linkedin_publication"].source_id.startswith("urn:li:")
     )
     distribution_complete = (
         linkedin_complete
-        if settings.linkedin_publish_after_notion
+        if linkedin_should_publish
         else appointment.status == AppointmentStatus.PUBLISHED or "notion_package" in kinds
     )
     if distribution_complete:
@@ -1597,7 +1666,9 @@ def _appointment_payload(
         "case_study_only",
         "strategy_requested",
     }:
-        required_kinds.extend(["growth_autopsy", "linkedin_post"])
+        required_kinds.append("growth_autopsy")
+        if settings.linkedin_enabled:
+            required_kinds.append("linkedin_post")
     if strategy_intent == "strategy_requested":
         required_kinds.extend(["strategy_doc", "pitch_deck_brief"])
     approved_count = sum(
@@ -1635,11 +1706,15 @@ def _appointment_payload(
     elif any(item.status == ArtifactStatus.PROCESSING for item in artifacts):
         next_action = "Automation is processing the next document"
     elif appointment.status == AppointmentStatus.PUBLISHED and distribution_complete:
-        next_action = "Package complete in Notion and LinkedIn"
+        next_action = (
+            "Package complete in Notion and LinkedIn"
+            if settings.linkedin_enabled
+            else "Package complete in Notion"
+        )
     elif required_kinds and approved_count == len(required_kinds):
         next_action = (
             "Publish the approved post to LinkedIn"
-            if "notion_package" in kinds and settings.linkedin_publish_after_notion
+            if "notion_package" in kinds and linkedin_should_publish
             else "Publish the approved package to Notion"
         )
     elif current < appointment.start_at and precall is None:
@@ -1870,11 +1945,17 @@ def dashboard_payload(settings: Settings, store: WorkflowStore) -> dict[str, Any
         {
             "key": "linkedin",
             "label": "LinkedIn",
-            "state": _integration_state(
-                linkedin_auth["authorized"] and not linkedin_auth["expired"]
+            "state": (
+                _integration_state(
+                    linkedin_auth["authorized"] and not linkedin_auth["expired"]
+                )
+                if settings.linkedin_enabled
+                else "disabled"
             ),
             "detail": (
-                "Personal profile authorized"
+                "Temporarily paused; Notion is the final publishing step"
+                if not settings.linkedin_enabled
+                else "Personal profile authorized"
                 if linkedin_auth["authorized"] and not linkedin_auth["expired"]
                 else "Connect a personal profile in Admin"
             ),

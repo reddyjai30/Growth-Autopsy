@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     )
     linkedin_token_file: Path = Path("secrets/linkedin-token.json")
     linkedin_api_version: str = Field(default="202607", pattern=r"^\d{6}$")
+    # TODO(linkedin): Keep the complete LinkedIn generation and publishing lane
+    # disabled until its post contract and OAuth application are production-ready.
+    linkedin_enabled: bool = False
     linkedin_publish_after_notion: bool = False
 
     def resolve_paths(self, base_dir: Path | None = None) -> "Settings":

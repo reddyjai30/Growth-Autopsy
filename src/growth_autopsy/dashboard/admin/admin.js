@@ -332,9 +332,11 @@ function renderOAuth(oauth) {
 function renderLinkedInOAuth(oauth) {
   const status = byId("linkedinOauthStatus");
   const connected = oauth.authorized && !oauth.expired;
-  status.textContent = connected ? "Connected" : oauth.expired ? "Expired" : oauth.configured ? "Ready" : "Not configured";
+  status.textContent = !oauth.workflow_enabled ? "Paused" : connected ? "Connected" : oauth.expired ? "Expired" : oauth.configured ? "Ready" : "Not configured";
   status.className = `status-badge ${connected ? "success" : oauth.expired ? "warning" : "neutral"}`;
-  byId("linkedinOauthSummary").textContent = connected
+  byId("linkedinOauthSummary").textContent = !oauth.workflow_enabled
+    ? "Temporarily disabled — Notion remains the final publishing step"
+    : connected
     ? `Authorized profile · ${oauth.person_urn}`
     : oauth.expired
       ? "Authorization expired — reconnect the profile"
@@ -344,8 +346,8 @@ function renderLinkedInOAuth(oauth) {
   byId("linkedinTokenPath").textContent = oauth.token_file;
   byId("linkedinTokenPath").title = oauth.token_file;
   const connect = byId("linkedinConnect");
-  connect.disabled = !oauth.configured;
-  connect.textContent = connected || oauth.expired ? "Reconnect LinkedIn" : "Connect LinkedIn";
+  connect.disabled = !oauth.workflow_enabled || !oauth.configured;
+  connect.textContent = !oauth.workflow_enabled ? "LinkedIn paused" : connected || oauth.expired ? "Reconnect LinkedIn" : "Connect LinkedIn";
   connect.dataset.url = oauth.connect_url;
 }
 

@@ -27,7 +27,7 @@ const FULL_PIPELINE = [
   { key: "growth_report", label: "Growth report", description: "Growth Intelligence Report" },
   { key: "strategy", label: "Strategy + share assets", description: "One-problem route" },
   { key: "approval", label: "Approval", description: "Review and edit" },
-  { key: "publish", label: "Publish", description: "Notion + LinkedIn" },
+  { key: "publish", label: "Publish", description: "Notion publishing" },
 ];
 
 const BOARD_COLUMNS = [
