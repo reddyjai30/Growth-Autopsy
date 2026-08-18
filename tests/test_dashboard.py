@@ -139,6 +139,7 @@ def test_linkedin_enabled_requires_post_urn_even_for_legacy_published_status(tmp
     settings = Settings(
         database_path=tmp_path / "state.db",
         shared_workdir=tmp_path,
+        linkedin_enabled=True,
         linkedin_publish_after_notion=True,
     )
     store = WorkflowStore(settings.database_path)
@@ -189,6 +190,47 @@ def test_linkedin_enabled_requires_post_urn_even_for_legacy_published_status(tmp
     complete = appointment_detail_payload(settings, store, appointment.calendar_event_id)
     assert complete is not None
     assert complete["progress"] == 100
+
+
+def test_disabled_linkedin_failure_is_hidden_and_does_not_block_notion(tmp_path) -> None:
+    now = datetime.now(UTC)
+    settings = Settings(database_path=tmp_path / "state.db", shared_workdir=tmp_path)
+    store = WorkflowStore(settings.database_path)
+    store.initialize()
+    appointment = _appointment(now)
+    appointment.strategy_mode = "case_study_only"
+    store.upsert_appointment(appointment)
+    store.set_setting(
+        f"strategy_intent:{appointment.calendar_event_id}",
+        "case_study_only",
+    )
+    for kind, status, notes in (
+        ("growth_autopsy", ArtifactStatus.APPROVED, "Approved"),
+        (
+            "linkedin_post",
+            ArtifactStatus.FAILED,
+            "Old LinkedIn contract failure",
+        ),
+    ):
+        store.upsert_artifact(
+            Artifact(
+                id=None,
+                calendar_event_id=appointment.calendar_event_id,
+                kind=kind,
+                title=kind,
+                status=status,
+                content="Approved report" if kind == "growth_autopsy" else "",
+                notes=notes,
+            )
+        )
+
+    detail = appointment_detail_payload(settings, store, appointment.calendar_event_id)
+
+    assert detail is not None
+    assert detail["approval"] == {"required": 1, "approved": 1, "awaiting_review": 0}
+    assert detail["next_action"] == "Publish the approved package to Notion"
+    assert not any(item["kind"].startswith("linkedin") for item in detail["artifacts"])
+    assert "artifact(s) failed" not in detail["attention_reasons"]
 
 
 @pytest.mark.asyncio

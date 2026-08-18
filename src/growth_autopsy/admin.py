@@ -319,6 +319,7 @@ CONFIG_FIELDS = (
     ConfigField("GA_LINKEDIN_REDIRECT_URI", "linkedin_redirect_uri", "OAuth redirect URI", "LinkedIn", kind="url", help="Must exactly match the URL registered in LinkedIn Developer Portal."),
     ConfigField("GA_LINKEDIN_TOKEN_FILE", "linkedin_token_file", "Authorized token path", "LinkedIn", kind="path"),
     ConfigField("GA_LINKEDIN_API_VERSION", "linkedin_api_version", "Posts API version", "LinkedIn", help="LinkedIn YYYYMM API version."),
+    ConfigField("GA_LINKEDIN_ENABLED", "linkedin_enabled", "Enable LinkedIn workflow", "LinkedIn", kind="boolean", help="Temporary feature flag. Keep disabled until LinkedIn generation and OAuth publishing are restored."),
     ConfigField("GA_LINKEDIN_PUBLISH_AFTER_NOTION", "linkedin_publish_after_notion", "Publish after Notion", "LinkedIn", kind="boolean", help="Publishes the approved post only after the Notion package succeeds."),
     ConfigField("GA_ENABLE_BACKGROUND_SYNC", "enable_background_sync", "Background automation", "Automation", kind="boolean"),
     ConfigField("GA_BACKGROUND_SYNC_INTERVAL_SECONDS", "background_sync_interval_seconds", "Sync interval", "Automation", kind="number", help="Seconds between controller ticks.", minimum=15, maximum=3600),
@@ -404,6 +405,7 @@ def _linkedin_oauth_overview(settings: Settings) -> dict[str, Any]:
         and settings.linkedin_redirect_uri
     )
     return {
+        "workflow_enabled": settings.linkedin_enabled,
         "configured": configured,
         "authorized": token["authorized"],
         "expired": token["expired"],
@@ -411,7 +413,9 @@ def _linkedin_oauth_overview(settings: Settings) -> dict[str, Any]:
         "expires_at": token["expires_at"],
         "token_file": str(settings.linkedin_token_file),
         "connect_url": "/internal/linkedin/oauth/start",
-        "publish_enabled": settings.linkedin_publish_after_notion,
+        "publish_enabled": (
+            settings.linkedin_enabled and settings.linkedin_publish_after_notion
+        ),
     }
 
 

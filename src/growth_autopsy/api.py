@@ -839,6 +839,11 @@ async def linkedin_oauth_start(
     settings: Settings = Depends(get_settings),
     store: WorkflowStore = Depends(get_store),
 ) -> RedirectResponse:
+    if not settings.linkedin_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="LinkedIn workflow is temporarily disabled",
+        )
     client = _linkedin_client(settings)
     if not client.configured:
         raise HTTPException(
