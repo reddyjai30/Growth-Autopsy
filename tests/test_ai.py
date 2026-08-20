@@ -79,6 +79,7 @@ async def test_direct_ai_synthesis_sends_only_supplied_evidence() -> None:
     assert "https://acme.example" in payload["messages"][1]["content"]
     assert "Review acquisition and conversion priorities" in payload["messages"][1]["content"]
     assert "untrusted evidence" in payload["messages"][0]["content"]
+    assert "A LinkedIn URL alone does not verify profile contents" in payload["messages"][0]["content"]
     assert "## SEO & Search Visibility" in payload["messages"][0]["content"]
 
 
@@ -105,6 +106,36 @@ async def test_direct_ai_synthesis_repairs_one_invalid_document() -> None:
 
     assert request_count == 2
     assert report == valid_report()
+
+
+@pytest.mark.asyncio
+async def test_precall_without_private_agenda_uses_neutral_research_context() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": valid_report()}}]},
+        )
+
+    item = appointment()
+    item.meeting_agenda = ""
+    client = AIClient(
+        "https://api.example.test/v1",
+        "secret",
+        "example-model",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.synthesize_precall(item, {})
+
+    payload = json.loads(captured[0].content)
+    system_prompt = payload["messages"][0]["content"]
+    user_prompt = payload["messages"][1]["content"]
+    assert "When no agenda was supplied" in system_prompt
+    assert "No private agenda supplied" in user_prompt
+    assert "treat all proposed discussion points as questions to validate" in user_prompt
 
 
 @pytest.mark.asyncio

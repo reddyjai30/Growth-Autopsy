@@ -384,6 +384,7 @@ def robots_allows(text: str, url: str) -> bool:
 
 
 SearchCallable = Callable[[str, int], Awaitable[list[dict[str, str]]]]
+MetaAdsCallable = Callable[[Appointment], Awaitable[dict[str, Any]]]
 
 
 async def duckduckgo_search(query: str, limit: int, timeout: int) -> list[dict[str, str]]:
@@ -410,14 +411,34 @@ async def collect_search(
     host = urlsplit(normalize_website_url(appointment.website)).hostname or ""
     company = appointment.company.replace('"', "")
     founder = appointment.founder_name.replace('"', "")
+    industry = appointment.industry.replace('"', "")
     query_specs = [
         ("reputation", f'"{company}" reviews'),
         ("site_commercial", f"site:{host} pricing products services case studies"),
         (
             "founder_authority",
-            f'"{founder}" "{company}" founder' if founder else f'"{company}" founder',
+            f'"{founder}" "{company}" founder interview story'
+            if founder
+            else f'"{company}" founder interview',
         ),
-        ("competitors", f'"{company}" competitors alternatives'),
+        (
+            "founder_profile",
+            f'site:linkedin.com/in "{founder}" "{company}"'
+            if founder
+            else f'site:linkedin.com/in "{company}" founder',
+        ),
+        (
+            "competitors",
+            f'"{company}" "{industry}" competitors alternatives'
+            if industry
+            else f'"{company}" competitors alternatives',
+        ),
+        (
+            "category_context",
+            f'"{industry}" market trends customer behaviour'
+            if industry
+            else f'"{company}" industry market category',
+        ),
         (
             "social_footprint",
             f'"{company}" LinkedIn Instagram Facebook YouTube TikTok Pinterest Reddit',
@@ -636,6 +657,31 @@ def _search_results(search: dict[str, Any], topic: str) -> list[dict[str, Any]]:
     ]
 
 
+def derive_founder_research(
+    appointment: Appointment,
+    search: dict[str, Any],
+) -> dict[str, Any]:
+    authority_results = _search_results(search, "founder_authority")
+    profile_results = _search_results(search, "founder_profile")
+    return {
+        "calendar_supplied_name": appointment.founder_name,
+        "calendar_supplied_linkedin": appointment.founder_linkedin,
+        "authority_discovery": authority_results[:10],
+        "profile_discovery": profile_results[:10],
+        "status": (
+            "public_candidates_available"
+            if authority_results or profile_results
+            else "no_public_candidates_returned"
+        ),
+        "caveat": (
+            "Calendar identity fields are supplied context. A supplied LinkedIn URL or "
+            "search result does not verify biography, achievements, current role, profile "
+            "ownership, or private profile content; those claims require observable public "
+            "evidence or founder confirmation."
+        ),
+    }
+
+
 def derive_channels(
     pages: list[dict[str, Any]], search: dict[str, Any]
 ) -> dict[str, Any]:
@@ -706,7 +752,9 @@ def derive_channels(
 
 
 def derive_ad_research(
-    pages: list[dict[str, Any]], search: dict[str, Any]
+    pages: list[dict[str, Any]],
+    search: dict[str, Any],
+    meta_library: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     technologies = _unique(
         technology
@@ -717,7 +765,10 @@ def derive_ad_research(
     return {
         "tracking_technology_observed": technologies,
         "meta": {
-            "status": "official_library_verification_required",
+            **(meta_library or {}),
+            "status": (meta_library or {}).get(
+                "status", "official_library_verification_required"
+            ),
             "discovery_candidates": _search_results(search, "meta_ad_library"),
             "official_tool": OFFICIAL_AD_RESEARCH_TOOLS["meta_ad_library"],
         },
@@ -778,11 +829,13 @@ class FreePrecallResearcher:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         search: SearchCallable | None = None,
+        meta_ads: MetaAdsCallable | None = None,
         validate_network: bool = True,
     ):
         self.settings = settings
         self.transport = transport
         self.search = search
+        self.meta_ads = meta_ads
         self.fetcher = PublicWebFetcher(
             timeout_seconds=settings.precall_http_timeout_seconds,
             max_response_bytes=settings.precall_max_response_bytes,
@@ -964,8 +1017,26 @@ class FreePrecallResearcher:
 
             return await SemrushMCPClient(self.settings).collect(appointment.website)
 
-        search, pagespeed, semrush = await asyncio.gather(
-            get_search(), get_pagespeed(), get_semrush()
+        async def get_meta_ads() -> dict[str, Any]:
+            from .meta_ads import build_meta_ad_library_url, collect_meta_ad_library
+
+            if self.meta_ads is not None:
+                return await self.meta_ads(appointment)
+            if self.transport is not None:
+                return {
+                    "status": "not_run_with_injected_transport",
+                    "provider": "Meta Ad Library",
+                    "search_url": build_meta_ad_library_url(
+                        appointment.company,
+                        self.settings.meta_ad_library_country,
+                    ),
+                    "active_ads_observed": None,
+                    "ads": [],
+                }
+            return await collect_meta_ad_library(self.settings, appointment)
+
+        search, pagespeed, semrush, meta_library = await asyncio.gather(
+            get_search(), get_pagespeed(), get_semrush(), get_meta_ads()
         )
         traffic_reports = [
             item
@@ -1034,6 +1105,7 @@ class FreePrecallResearcher:
             },
             "pagespeed": pagespeed,
             "public_search": search,
+            "founder_research": derive_founder_research(appointment, search),
             "seo": {
                 **derive_seo(pages, search),
                 "licensed_semrush": [
@@ -1044,7 +1116,7 @@ class FreePrecallResearcher:
             },
             "semrush": semrush,
             "channels": derive_channels(pages, search),
-            "ads": derive_ad_research(pages, search),
+            "ads": derive_ad_research(pages, search, meta_library),
             "competitors": derive_competitor_candidates(search, final_root),
             "traffic": traffic,
             "unavailable_or_private_data": unavailable,
@@ -1129,6 +1201,20 @@ def render_evidence_markdown(evidence: dict[str, Any]) -> str:
         lines.append(
             f"- {platform.title()}: {item.get('status', 'unknown')} — {item.get('official_tool', '')}"
         )
+        if platform == "meta" and item.get("active_ads_observed") is not None:
+            lines.append(
+                f"  - Active Meta records observed: {item['active_ads_observed']}"
+            )
+        if platform == "meta" and item.get("search_url"):
+            lines.append(f"  - Official search: {item['search_url']}")
+        if platform == "meta":
+            for ad in item.get("ads", []):
+                lines.append(
+                    "  - Library ID "
+                    f"{ad.get('library_id', 'unknown')}: "
+                    f"{ad.get('creative_format_observed', 'not observable')} — "
+                    f"{ad.get('visible_text_excerpt', '')}"
+                )
     if ads.get("hard_boundary"):
         lines.append(f"- Boundary: {ads['hard_boundary']}")
     lines.extend(["", "## Competitor discovery candidates", ""])

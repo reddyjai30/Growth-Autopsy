@@ -177,9 +177,20 @@ GA_PAGESPEED_API_KEY=
 GA_PRECALL_LOCAL_LIGHTHOUSE_ENABLED=true
 GA_LIGHTHOUSE_EXECUTABLE=./node_modules/.bin/lighthouse
 GA_PLAYWRIGHT_ENABLED=true
+GA_META_AD_LIBRARY_ENABLED=true
+GA_META_AD_LIBRARY_COUNTRY=ALL
+GA_META_AD_LIBRARY_MAX_ADS=12
 ```
 
 `GA_PAGESPEED_API_KEY` is optional. Without it, quota is more limited and local Lighthouse remains available as a fallback.
+
+The Meta collector opens the official public Ad Library in a disposable,
+logged-out Chromium context and searches for currently active commercial ads by
+the Calendar company name. Verified Library IDs, visible creative text,
+formats, platforms and landing links become bounded AI evidence. Meta login,
+rate-limit, CAPTCHA or unknown-layout responses are recorded as inconclusive
+with the official search link; they are never reported as zero ads. Public data
+does not provide account ROAS, CPA, spend, targeting or conversion performance.
 
 ### Optional Semrush MCP settings
 
@@ -247,27 +258,25 @@ uv run growth-autopsy calendar-auth \
 
 ## 4. Create a discovery meeting
 
-Use this title format so the Calendar poller recognizes the meeting:
+The event title can be any client-safe meeting title. Put the private automation
+selector and research context in the description:
 
 ```text
-[GROWTH AUTOPSY] Company Name – Founder Name
-```
-
-Use this description format:
-
-```text
+Automation: growth_autopsy
 Company Name: Company Name
 Company Website: https://www.example.com
-Founder Email: founder@example.com
+Founder Name: Founder Name
 Founder LinkedIn: https://www.linkedin.com/in/founder-name
-
-Meeting Agenda:
-- Understand the company, audience, offer, and current growth channels
-- Discuss the founder's main growth constraints and targets
-- Identify opportunities for the Growth Autopsy
+Industry: Category or industry
+Strategy Mode: auto
 ```
 
-`Company Name` and `Company Website` are required. Founder email, LinkedIn, and agenda are optional but improve matching and analysis. The reusable template is at [config/calendar-event-template.md](config/calendar-event-template.md).
+`Automation`, `Company Name`, and `Company Website` drive ingestion. Founder,
+LinkedIn, industry and strategy mode improve the research context. A meeting
+agenda is optional; when absent, the report builds neutral discovery questions
+from public evidence without claiming those topics are founder priorities. The
+legacy `[GROWTH AUTOPSY]` title prefix remains supported. The reusable template
+is at [config/calendar-event-template.md](config/calendar-event-template.md).
 
 After creating the event, force a synchronization:
 

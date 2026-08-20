@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -77,6 +78,25 @@ def parse_description(description: str) -> dict[str, str]:
     return fields
 
 
+def _calendar_url(value: str) -> str:
+    """Return the real URL when Calendar supplies Markdown or a Google redirect."""
+
+    candidate = value.strip().strip("<>")
+    markdown = re.fullmatch(r"\[([^\]]+)]\((https?://[^)]+)\)", candidate)
+    if markdown:
+        visible, target = markdown.groups()
+        candidate = visible if visible.startswith(("http://", "https://")) else target
+
+    parsed = urlsplit(candidate)
+    host = (parsed.hostname or "").casefold()
+    if host in {"google.com", "www.google.com"} and parsed.path == "/url":
+        query = parse_qs(parsed.query)
+        destination = (query.get("q") or query.get("url") or [""])[0].strip()
+        if destination.startswith(("http://", "https://")):
+            return destination
+    return candidate
+
+
 def _company_from_title(title: str, prefix: str) -> str:
     cleaned = title
     if prefix and cleaned.casefold().startswith(prefix.casefold()):
@@ -116,7 +136,12 @@ def parse_calendar_event(
 
     title = str(event.get("summary") or "").strip()
     fields = parse_description(str(event.get("description") or ""))
-    marker = fields.get("automation", "").casefold() == "growth_autopsy"
+    marker_value = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        fields.get("automation", "").strip().casefold(),
+    ).strip("_")
+    marker = marker_value == "growth_autopsy"
     title_match = bool(title_prefix and title.casefold().startswith(title_prefix.casefold()))
     if not marker and not title_match:
         return None
@@ -140,9 +165,11 @@ def parse_calendar_event(
     company = (
         fields.get("company")
         or fields.get("company_name")
-        or _company_from_title(title, title_prefix)
+        or (_company_from_title(title, title_prefix) if title_match else "")
     )
-    website = fields.get("company_website") or fields.get("website", "")
+    website = _calendar_url(
+        fields.get("company_website") or fields.get("website", "")
+    )
     founder_email = (
         fields.get("founder_email")
         or fields.get("email")
@@ -152,7 +179,7 @@ def parse_calendar_event(
         fields.get("founder")
         or fields.get("founder_name")
         or str(first_attendee.get("displayName") or "")
-        or _founder_from_title(title, title_prefix)
+        or (_founder_from_title(title, title_prefix) if title_match else "")
     )
 
     status = AppointmentStatus.BOOKED
@@ -168,7 +195,9 @@ def parse_calendar_event(
         website=website,
         founder_name=founder_name,
         founder_email=founder_email,
-        founder_linkedin=fields.get("founder_linkedin", fields.get("linkedin", "")),
+        founder_linkedin=_calendar_url(
+            fields.get("founder_linkedin", fields.get("linkedin", ""))
+        ),
         industry=fields.get("industry", ""),
         strategy_mode=fields.get("strategy_mode", "auto").casefold(),
         start_at=_parse_datetime(start_raw),
