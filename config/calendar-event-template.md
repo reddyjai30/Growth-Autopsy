@@ -5,35 +5,38 @@ Use this format for every founder discovery call.
 ## Event title
 
 ```text
-[GROWTH AUTOPSY] Company Name – Founder Name
+Any client-safe meeting title
 ```
 
-Keep the `[GROWTH AUTOPSY]` prefix exactly as written. The company and founder
-names after it become the meeting title shown in the dashboard.
+The title can remain natural because the automation is selected privately from
+the description marker below. The legacy `[GROWTH AUTOPSY]` title prefix remains
+supported but is no longer required.
 
 ## Event description
 
 ```text
+Automation: growth_autopsy
 Company Name: Company Name
 Company Website: https://example.com
-Founder Email: founder@example.com
+Founder Name: Founder Name
 Founder LinkedIn: https://www.linkedin.com/in/example
-Meeting Agenda:
-- Understand the founder's current growth priorities
-- Review acquisition, conversion and retention challenges
-- Identify the most valuable opportunities to discuss
+Industry: Category or industry
+Strategy Mode: auto
 ```
 
-Only **Company Name** and **Company Website** are required. The system cannot run
-pre-call research without both.
+`Automation: growth_autopsy`, **Company Name**, and **Company Website** are the
+core description contract. The system cannot run pre-call research without the
+company and website.
 
 **Founder Email** and **Founder LinkedIn** are optional. When supplied, they are
 used only as additional founder context for the private analysis. Founder email
 can also be inferred from an external Calendar attendee, and founder name can be
 inferred from the event title.
 
-**Meeting Agenda** is recommended and can contain one line or multiple bullet
-points. It guides the report's recommended call plan and discovery questions.
+**Meeting Agenda is optional.** If it is omitted because the founder can see the
+invite, the report derives a neutral call plan and discovery questions from the
+supplied company, founder and industry context plus public evidence. It does not
+present those research hypotheses as founder priorities.
 
 The parser also accepts the shorter legacy names `Company`, `Website`, and
 `Agenda`, so existing Calendar events continue to work.

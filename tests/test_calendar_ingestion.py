@@ -103,6 +103,68 @@ def test_google_calendar_html_description_is_parsed() -> None:
     assert appointment.founder_name == "Alice Founder"
 
 
+def test_description_marker_supports_client_safe_title_and_wrapped_urls() -> None:
+    event = calendar_event()
+    event["summary"] = "Gymshark founder conversation"
+    event["description"] = "\n".join(
+        [
+            "Automation: growth autopsy",
+            "Company Name: Gymshark",
+            (
+                "Company Website: "
+                "https://www.google.com/url?q=https%3A%2F%2Fuk.gymshark.com%2F"
+                "&sa=D&source=calendar"
+            ),
+            "Founder Name: Ben Francis MBE",
+            (
+                "Founder LinkedIn: "
+                "[https://www.linkedin.com/in/gymshark/]"
+                "(https://www.google.com/url?q=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fgymshark%2F)"
+            ),
+            "Industry: DTC Fitness Apparel and Accessories",
+            "Strategy Mode: auto",
+        ]
+    )
+
+    appointment = parse_calendar_event(
+        event,
+        calendar_id="primary",
+        title_prefix="[GROWTH AUTOPSY]",
+    )
+
+    assert appointment is not None
+    assert appointment.title == "Gymshark founder conversation"
+    assert appointment.company == "Gymshark"
+    assert appointment.website == "https://uk.gymshark.com/"
+    assert appointment.founder_name == "Ben Francis MBE"
+    assert appointment.founder_linkedin == "https://www.linkedin.com/in/gymshark/"
+    assert appointment.industry == "DTC Fitness Apparel and Accessories"
+    assert appointment.strategy_mode == "auto"
+    assert appointment.meeting_agenda == ""
+    assert appointment.status == AppointmentStatus.BOOKED
+
+
+def test_description_only_event_does_not_infer_company_from_generic_title() -> None:
+    event = calendar_event()
+    event["summary"] = "Founder discovery conversation"
+    event["description"] = "\n".join(
+        [
+            "Automation: growth_autopsy",
+            "Company Website: https://example.com",
+        ]
+    )
+
+    appointment = parse_calendar_event(
+        event,
+        calendar_id="primary",
+        title_prefix="[GROWTH AUTOPSY]",
+    )
+
+    assert appointment is not None
+    assert appointment.company == ""
+    assert appointment.status == AppointmentStatus.NEEDS_INPUT
+
+
 class FakeCalendar:
     def __init__(self, events: list[dict]):
         self.events = events

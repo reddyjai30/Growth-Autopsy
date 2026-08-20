@@ -66,6 +66,23 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
             return [{"title": "Beta Shoes", "url": "https://beta.example", "snippet": query}]
         return [{"title": "Acme review", "url": "https://review.example/acme", "snippet": query}]
 
+    async def meta_ads(item: Appointment) -> dict:
+        assert item.company == "Acme"
+        return {
+            "status": "available",
+            "provider": "Meta Ad Library",
+            "search_url": "https://www.facebook.com/ads/library/?q=Acme",
+            "active_ads_observed": 1,
+            "ads": [
+                {
+                    "library_id": "123",
+                    "creative_format_observed": "image",
+                    "visible_text_excerpt": "Try Acme today",
+                    "landing_pages": [],
+                }
+            ],
+        }
+
     settings = Settings(
         database_path=tmp_path / "state.db",
         shared_workdir=tmp_path,
@@ -78,6 +95,7 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
         settings,
         transport=httpx.MockTransport(handler),
         search=search,
+        meta_ads=meta_ads,
         validate_network=False,
     )
 
@@ -90,11 +108,22 @@ async def test_free_research_collects_observed_signals(tmp_path) -> None:
     assert evidence["pagespeed"]["mobile"]["scores"]["performance"] == 91
     assert evidence["traffic"]["estimated_monthly_visits"] is None
     assert evidence["public_search"]["queries"][0]["results"]
-    assert len(evidence["public_search"]["queries"]) == 8
+    assert len(evidence["public_search"]["queries"]) == 10
+    category_query = next(
+        item
+        for item in evidence["public_search"]["queries"]
+        if item["topic"] == "category_context"
+    )
+    assert '"Ecommerce" market trends customer behaviour' == category_query["query"]
+    assert evidence["founder_research"]["calendar_supplied_name"] == "Alice"
+    assert evidence["founder_research"]["status"] == "public_candidates_available"
+    assert evidence["founder_research"]["authority_discovery"]
     assert evidence["channels"]["channels"]["instagram"]["status"] == "observed_from_company_website"
     assert evidence["channels"]["channels"]["linkedin"]["status"] == "observed_from_company_website"
     assert evidence["ads"]["tracking_technology_observed"] == ["Meta Pixel", "TikTok Pixel"]
-    assert evidence["ads"]["meta"]["status"] == "official_library_verification_required"
+    assert evidence["ads"]["meta"]["status"] == "available"
+    assert evidence["ads"]["meta"]["active_ads_observed"] == 1
+    assert evidence["ads"]["meta"]["ads"][0]["library_id"] == "123"
     assert evidence["competitors"]["candidates"][0]["host"] == "beta.example"
     assert evidence["appointment"]["meeting_agenda"] == (
         "Discuss acquisition and conversion"

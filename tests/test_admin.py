@@ -96,6 +96,20 @@ def test_config_updates_are_atomic_private_and_require_explicit_secret_clear(
         admin.update_env_file({}, clear_secrets=["GA_AI_MODEL"])
 
 
+def test_meta_ad_library_country_is_normalized_and_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(admin, "env_file_path", lambda: env_file)
+
+    admin.update_env_file({"GA_META_AD_LIBRARY_COUNTRY": "gb"})
+
+    assert 'GA_META_AD_LIBRARY_COUNTRY="GB"' in env_file.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="ALL or a two-letter country code"):
+        admin.update_env_file({"GA_META_AD_LIBRARY_COUNTRY": "United Kingdom"})
+
+
 def test_google_oauth_upload_accepts_only_desktop_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

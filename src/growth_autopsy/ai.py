@@ -167,6 +167,7 @@ EVIDENCE AND SAFETY
 - Every material claim must use a descriptive Markdown link such as [Company homepage](https://example.com) or name the supplied Semrush MCP report. Never paste a long raw URL into body text.
 - If evidence is missing, say "Not available in the current evidence". Never turn missing data into zero or inactivity.
 - Never invent traffic, rankings, keywords, backlinks, revenue, conversion rate, ROAS, CPA, CAC, CPC, CTR, spend, engagement, ad activity or founder intent.
+- Treat Calendar company, founder, LinkedIn and industry fields as supplied identity/context, not proof of biography or performance. A LinkedIn URL alone does not verify profile contents, achievements or current role. Founder claims beyond the supplied identity must trace to observable company-site or founder-research evidence.
 - A tracking pixel does not prove active ads or retargeting. Search results do not prove profile ownership. Semrush values are estimates, not client analytics.
 
 DOCUMENT STYLE
@@ -181,7 +182,7 @@ REQUIRED ORDER AND CONTENT
 Use these exact H2 headings in this exact order:
 
 ## Founder & Company Background
-Start with the founder, supplied LinkedIn/contact context and meeting agenda. Then explain the company website, what the business does, products/services or offer, category/industry, likely customer/ICP and publicly observable business model. Label unsupported interpretations as inferred.
+Start with the founder identity supplied through Calendar, then add only evidence-supported public founder context from the company site or founder-research results. Describe the supplied LinkedIn URL as a supplied profile link unless its public details were independently observed. Include the meeting agenda only when one was privately supplied. Then explain the company website, what the business does, products/services or offer, category/industry, likely customer/ICP and publicly observable business model. Label unsupported interpretations as inferred. When no agenda was supplied, do not imply that any research-derived topic is already a founder priority.
 
 ## Executive Marketing Brief
 Provide at most five concise bullets covering positioning, strongest signal, largest opportunity, recommended call angle and the most important evidence limitation.
@@ -196,7 +197,7 @@ Use H3 subsections for Technical SEO, On-page & Content, Organic Visibility, and
 Explain any licensed traffic estimates, public discovery signals and channel mix limitations. Never invent visits or percentages.
 
 ## Paid Media & Creative Signals
-Separate Meta, Google and TikTok. Distinguish tracking technology, ad-library evidence and account-access-only metrics.
+Separate Meta, Google and TikTok. For Meta, use `ads.meta` from the evidence: when its status is `available`, analyse only the bounded records with Library IDs and report observed active-ad count, start dates, platforms, creative formats, visible hooks/copy, offers, angles and landing-page alignment. Treat keyword matches without a matching company landing domain as attribution candidates, not confirmed company ads. When Meta reports `blocked_by_meta`, `inconclusive` or `unavailable`, state that the automatic check was inconclusive and link the supplied official search URL; never convert that state into “no ads”. Use “no active ads observed” only when Meta explicitly returned that status. Distinguish tracking technology, ad-library evidence and account-access-only metrics.
 
 ## Social, Email & Technology
 Summarize confirmed company-linked channels, unverified candidates, content/email capture signals and the observed technology stack.
@@ -211,10 +212,10 @@ Use exactly 10 numbered items with no nested lists. Format each as: **Short find
 Use exactly 10 numbered items with no nested lists. Format each as: **Testable opportunity.** Evidence-backed gap; business implication; recommended direction; descriptive evidence link/report; confidence. Phrase gaps as opportunities, not accusations.
 
 ## 5 Discovery Questions
-Use exactly 5 numbered, non-nested questions. Tie them to the supplied meeting agenda and the highest-value evidence gaps.
+Use exactly 5 numbered, non-nested questions. When an agenda was supplied, tie them to it and the highest-value evidence gaps. When no agenda was supplied, derive respectful validation questions from the company, founder, industry and strongest evidence gaps; do not attribute those hypotheses to the founder.
 
 ## Recommended Call Agenda
-Turn the supplied agenda plus the research into a concise timed or ordered call plan. Do not invent founder priorities.
+When a private agenda was supplied, turn it plus the research into a concise timed or ordered call plan. When it was not supplied, create a neutral research-led call plan that begins with founder confirmation, separates known evidence from hypotheses, and reserves time to ask which single problem the founder wants solved. Never invent founder priorities.
 
 ## Data Boundaries & Access Needed
 State which important questions require Analytics, Search Console, ad accounts, CRM or founder confirmation.
@@ -230,7 +231,17 @@ Provide one deduplicated list of descriptively named Markdown links and Semrush 
             f"- Founder email: {appointment.founder_email or 'Not supplied'}\n"
             f"- Founder LinkedIn: {appointment.founder_linkedin or 'Not supplied'}\n"
             f"- Industry: {appointment.industry or 'To be inferred only when evidence supports it'}\n"
-            f"- Meeting agenda: {appointment.meeting_agenda or 'Not supplied'}\n\n"
+            "- Meeting agenda: "
+            + (
+                appointment.meeting_agenda
+                if appointment.meeting_agenda
+                else (
+                    "No private agenda supplied. Build neutral call preparation from "
+                    "the Calendar company/founder/industry context and public evidence; "
+                    "treat all proposed discussion points as questions to validate."
+                )
+            )
+            + "\n\n"
             f"Evidence JSON:\n{evidence_json}"
         )
         messages: list[dict[str, str]] = [

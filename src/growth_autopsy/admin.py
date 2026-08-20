@@ -294,6 +294,11 @@ CONFIG_FIELDS = (
     ConfigField("GA_PLAYWRIGHT_ENABLED", "playwright_enabled", "Playwright rendering", "Research", kind="boolean"),
     ConfigField("GA_PLAYWRIGHT_TIMEOUT_SECONDS", "playwright_timeout_seconds", "Playwright timeout", "Research", kind="number", minimum=5, maximum=90),
     ConfigField("GA_PLAYWRIGHT_SETTLE_MILLISECONDS", "playwright_settle_milliseconds", "Page settle time", "Research", kind="number", help="Milliseconds allowed for rendered pages to settle.", minimum=0, maximum=10000),
+    ConfigField("GA_META_AD_LIBRARY_ENABLED", "meta_ad_library_enabled", "Meta Ad Library research", "Research", kind="boolean", help="Checks Meta's official public library for active-ad evidence."),
+    ConfigField("GA_META_AD_LIBRARY_COUNTRY", "meta_ad_library_country", "Meta Ad Library country", "Research", help="ALL or a two-letter country code such as GB, US or IN."),
+    ConfigField("GA_META_AD_LIBRARY_MAX_ADS", "meta_ad_library_max_ads", "Maximum Meta ads", "Research", kind="number", minimum=1, maximum=30),
+    ConfigField("GA_META_AD_LIBRARY_TIMEOUT_SECONDS", "meta_ad_library_timeout_seconds", "Meta library timeout", "Research", kind="number", minimum=10, maximum=90),
+    ConfigField("GA_META_AD_LIBRARY_SETTLE_MILLISECONDS", "meta_ad_library_settle_milliseconds", "Meta page settle time", "Research", kind="number", minimum=1000, maximum=15000),
     ConfigField("GA_SEMRUSH_MCP_ENABLED", "semrush_mcp_enabled", "Semrush enrichment", "Semrush", kind="boolean"),
     ConfigField("GA_SEMRUSH_API_KEY", "semrush_api_key", "Semrush API key", "Semrush", kind="password", secret=True),
     ConfigField("GA_SEMRUSH_DATABASE", "semrush_database", "Semrush database", "Semrush"),
@@ -442,6 +447,10 @@ def _validate_config_value(field: ConfigField, raw: str) -> str:
         return str(number)
     if field.choices and value not in field.choices:
         raise ValueError(f"{field.label} must be one of: {', '.join(field.choices)}")
+    if field.key == "GA_META_AD_LIBRARY_COUNTRY":
+        value = value.upper()
+        if not re.fullmatch(r"(?:ALL|[A-Z]{2})", value):
+            raise ValueError("Meta Ad Library country must be ALL or a two-letter country code")
     if field.key == "GA_LINKEDIN_API_VERSION" and not re.fullmatch(r"\d{6}", value):
         raise ValueError("LinkedIn Posts API version must use YYYYMM format")
     if field.kind == "url" and value:

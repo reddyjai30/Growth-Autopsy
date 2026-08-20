@@ -53,6 +53,13 @@ same-site crawl, robots/sitemap evidence, DuckDuckGo discovery and
 PageSpeed/Lighthouse. Private/reserved destinations are blocked and public page
 content is treated as untrusted evidence.
 
+`GA_META_AD_LIBRARY_ENABLED=true` adds a bounded, logged-out check of Meta's
+official public Ad Library using the Calendar company name. Set
+`GA_META_AD_LIBRARY_COUNTRY` to `ALL` or a two-letter market such as `GB`. The
+collector persists only visible active-ad records and Library IDs. If Meta
+blocks the request or changes the public layout, the report records the check as
+inconclusive and provides the official search URL instead of claiming no ads.
+
 Semrush is strictly optional. Set `GA_SEMRUSH_MCP_ENABLED=true` and
 `GA_SEMRUSH_API_KEY` only for an account with the appropriate official API
 entitlement and units. The service connects directly to the official Streamable

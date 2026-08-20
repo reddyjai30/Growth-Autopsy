@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     playwright_enabled: bool = True
     playwright_timeout_seconds: int = Field(default=30, ge=5, le=90)
     playwright_settle_milliseconds: int = Field(default=1500, ge=0, le=10000)
+    meta_ad_library_enabled: bool = True
+    meta_ad_library_country: str = Field(default="ALL", pattern=r"^(?:ALL|[A-Za-z]{2})$")
+    meta_ad_library_max_ads: int = Field(default=12, ge=1, le=30)
+    meta_ad_library_timeout_seconds: int = Field(default=45, ge=10, le=90)
+    meta_ad_library_settle_milliseconds: int = Field(default=5000, ge=1000, le=15000)
 
     # Semrush has no unrestricted free SEO/traffic API. These settings activate
     # the official paid API only when a licensed key is supplied.
